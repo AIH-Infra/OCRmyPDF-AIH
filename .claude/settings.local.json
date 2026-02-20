@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(PYTHONIOENCODING=utf-8 \"D:/Runtime/OCRmyPDF_py312/python.exe\":*)"
+    ]
+  }
+}
