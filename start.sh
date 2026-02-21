@@ -4,6 +4,9 @@
 
 cd "$(dirname "$0")"
 
+# Ensure Homebrew paths are available (macOS)
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
 echo ""
 echo "=========================================="
 echo "  OCRmyPDF-AIH Starting..."

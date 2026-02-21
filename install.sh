@@ -5,6 +5,16 @@
 set -e
 cd "$(dirname "$0")"
 
+# Ensure Homebrew paths are available (macOS)
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+# Auto-install Homebrew on macOS if missing
+if [[ "$OSTYPE" == "darwin"* ]] && ! command -v brew &>/dev/null; then
+    echo "[Info] Homebrew not found, installing..."
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+fi
+
 echo ""
 echo "============================================================"
 echo "   OCRmyPDF-AIH Environment Setup"
@@ -88,31 +98,42 @@ echo "[OK] Dependencies installed"
 echo ""
 
 # ============================================
-# Step 4: Check / Install Tesseract
+# Step 4: Check / Install Tesseract & Ghostscript
 # ============================================
-echo "[4/4] Checking Tesseract..."
+echo "[4/4] Checking Tesseract & Ghostscript..."
 
-if command -v tesseract &>/dev/null; then
-    TESS_VER=$(tesseract --version 2>&1 | head -1)
-    echo "[Found] $TESS_VER"
-else
-    echo "[Info] Tesseract not found, trying auto-install..."
-    if [[ "$OSTYPE" == "darwin"* ]]; then
-        if command -v brew &>/dev/null; then
-            brew install tesseract tesseract-lang 2>/dev/null && echo "[OK] Tesseract installed" || \
-                echo "[Warning] Auto-install failed: brew install tesseract tesseract-lang"
-        else
-            echo "[Warning] Homebrew not found: brew install tesseract tesseract-lang"
-        fi
+for prog in tesseract gs; do
+    if command -v $prog &>/dev/null; then
+        echo "[Found] $prog: $($prog --version 2>&1 | head -1)"
     else
-        if command -v apt &>/dev/null; then
-            sudo apt install -y tesseract-ocr tesseract-ocr-chi-sim 2>/dev/null && echo "[OK] Tesseract installed" || \
-                echo "[Warning] Auto-install failed: sudo apt install tesseract-ocr"
+        echo "[Info] $prog not found, trying auto-install..."
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            if command -v brew &>/dev/null; then
+                if [ "$prog" = "tesseract" ]; then
+                    brew install tesseract tesseract-lang 2>/dev/null && echo "[OK] Tesseract installed" || \
+                        echo "[Warning] brew install tesseract tesseract-lang"
+                else
+                    brew install ghostscript 2>/dev/null && echo "[OK] Ghostscript installed" || \
+                        echo "[Warning] brew install ghostscript"
+                fi
+            else
+                echo "[Warning] Homebrew not found"
+            fi
         else
-            echo "[Warning] Please install Tesseract manually"
+            if command -v apt &>/dev/null; then
+                if [ "$prog" = "tesseract" ]; then
+                    sudo apt install -y tesseract-ocr tesseract-ocr-chi-sim 2>/dev/null && echo "[OK] Tesseract installed" || \
+                        echo "[Warning] sudo apt install tesseract-ocr"
+                else
+                    sudo apt install -y ghostscript 2>/dev/null && echo "[OK] Ghostscript installed" || \
+                        echo "[Warning] sudo apt install ghostscript"
+                fi
+            else
+                echo "[Warning] Please install $prog manually"
+            fi
         fi
     fi
-fi
+done
 
 echo ""
 echo "============================================================"

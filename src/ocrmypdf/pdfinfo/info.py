@@ -395,6 +395,7 @@ class PdfInfo:
     it can be pickled and passed to a worker process.
     """
 
+    _pages: list = []
     _has_acroform: bool = False
     _has_signature: bool = False
     _needs_rendering: bool = False

@@ -95,9 +95,10 @@ if %errorlevel% neq 0 (
 echo [OK] Dependencies installed
 echo.
 
-:: Step 4: Check Tesseract
-echo [4/4] Checking Tesseract...
+:: Step 4: Check Tesseract & Ghostscript
+echo [4/4] Checking Tesseract ^& Ghostscript...
 
+:: -- Tesseract --
 set TESS_OK=0
 where tesseract >nul 2>&1 && set TESS_OK=1
 if "!TESS_OK!"=="0" (
@@ -117,6 +118,30 @@ if "!TESS_OK!"=="1" (
     ) else (
         echo [Warning] Auto-install failed. Install manually:
         echo           https://github.com/UB-Mannheim/tesseract/wiki
+    )
+)
+
+:: -- Ghostscript --
+set GS_OK=0
+where gswin64c >nul 2>&1 && set GS_OK=1
+if "!GS_OK!"=="0" (
+    where gs >nul 2>&1 && set GS_OK=1
+)
+if "!GS_OK!"=="0" (
+    if exist "C:\Program Files\gs\gs10.04.0\bin\gswin64c.exe" set GS_OK=1
+    if exist "C:\Program Files\gs\gs10.03.1\bin\gswin64c.exe" set GS_OK=1
+)
+
+if "!GS_OK!"=="1" (
+    echo [Found] Ghostscript
+) else (
+    echo [Info] Ghostscript not found, trying auto-install...
+    winget install -e --id ArtifexSoftware.GhostScript.Console --accept-source-agreements --accept-package-agreements >nul 2>&1
+    if !errorlevel! equ 0 (
+        echo [OK] Ghostscript installed. Reopen terminal for PATH update.
+    ) else (
+        echo [Warning] Auto-install failed. Install manually:
+        echo           https://ghostscript.com/releases/gsdnld.html
     )
 )
 
