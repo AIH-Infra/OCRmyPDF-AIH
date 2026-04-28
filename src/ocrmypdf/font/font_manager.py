@@ -110,6 +110,9 @@ class FontManager:
         # x_bearing is the left side bearing in font units
         units_per_em = self.hb_face.upem
         lsb_units = extents.x_bearing
-        lsb_pt = lsb_units * font_size / units_per_em
+        if units_per_em == 0:
+            lsb_pt = 0.0
+        else:
+            lsb_pt = lsb_units * font_size / units_per_em
 
         return lsb_pt

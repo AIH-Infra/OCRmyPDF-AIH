@@ -223,7 +223,9 @@ def _get_dpi(ctm_shorthand, image_size) -> Resolution:
 
     def calc(drawn, pixels, inches_per_pt=72.0):
         # The scale of the image is pixels per unit of default user space (1/72")
-        scale = pixels / drawn if drawn != 0 else inf
+        if pixels == 0 or drawn == 0:
+            return 1.0  # Return minimum valid DPI to avoid division by zero
+        scale = pixels / drawn
         dpi = scale * inches_per_pt
         return dpi
 

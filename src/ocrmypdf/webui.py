@@ -7,20 +7,32 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import warnings
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+# 禁用所有警告（包括子进程）
+warnings.filterwarnings('ignore')
+os.environ['PYTHONWARNINGS'] = 'ignore'
+
 import pikepdf
 import streamlit as st
 
-_CONFIG_PATH = Path(__file__).parent / ".ocrmypdf_pro.json"
+# 禁用 Streamlit 日志（主进程和子进程）
+for logger_name in ['streamlit', 'streamlit.runtime', 'streamlit.runtime.scriptrunner_utils',
+                    'streamlit.runtime.state', 'streamlit.runtime.caching']:
+    logging.getLogger(logger_name).setLevel(logging.CRITICAL)
+logging.getLogger('streamlit.runtime').setLevel(logging.ERROR)
+
+_CONFIG_PATH = Path.home() / ".ocrmypdf-aih-webui.json"
 
 def _load_config() -> dict:
     try:
@@ -34,10 +46,10 @@ def _save_config(cfg: dict):
     except Exception:
         pass
 
-# 确保 misc/ 目录在 sys.path 中，以便导入 Calamari 插件
-_misc_dir = str(Path(__file__).parent)
-if _misc_dir not in sys.path:
-    sys.path.insert(0, _misc_dir)
+# 确保当前包目录在 sys.path 中，以便加载同包内插件模块
+_pkg_dir = str(Path(__file__).parent)
+if _pkg_dir not in sys.path:
+    sys.path.insert(0, _pkg_dir)
 
 # 预初始化 OCRmyPDF 插件基础设施（防止 Streamlit 模块重载丢失注册状态）
 from ocrmypdf.api import setup_plugin_infrastructure as _setup_plugins
@@ -362,6 +374,9 @@ def _ocr_one_file(
     """处理单个文件（可在子线程中调用）."""
     import builtins
     import ocrmypdf
+    import time
+
+    start_time = time.time()
 
     # 通过 builtins 传递状态，确保插件（被 importlib 加载的独立模块实例）能读取
     builtins._ocrmypdf_page_progress_state = state
@@ -382,11 +397,14 @@ def _ocr_one_file(
             tmp_in.flush()
             tmp_in_path, tmp_out_path = tmp_in.name, tmp_out.name
 
-        plugins = [str(Path(__file__).parent / "_progress_plugin.py")]
-        if backend == "Calamari（远程）":
-            plugin_path = Path(__file__).parent / "ocrmypdf_calamari.py"
+        plugins = [str(Path(__file__).parent / "aih_progress_plugin.py")]
+        if backend == "Calamari（HTTP服务）":
+            plugin_path = Path(__file__).parent / "aih_calamari_plugin.py"
+            print(f"[DEBUG] Plugin path: {plugin_path}")
+            print(f"[DEBUG] Plugin exists: {plugin_path.exists()}")
             if plugin_path.exists():
                 plugins.append(str(plugin_path))
+                print(f"[DEBUG] Plugins to load: {plugins}")
             else:
                 raise FileNotFoundError(f"Calamari 插件未找到：{plugin_path}")
 
@@ -398,30 +416,39 @@ def _ocr_one_file(
             **kw,
         )
 
+        elapsed = time.time() - start_time
+        elapsed_str = f"{elapsed:.1f}秒"
+
         if result == ocrmypdf.ExitCode.ok:
             out_data = Path(tmp_out_path).read_bytes()
             state["outputs"].append((out_name, out_data))
             if save_to_disk and output_dir:
                 (Path(output_dir) / out_name).write_bytes(out_data)
-            _log(state, "success", fname, f"{fname} -> {out_name}")
+            _log(state, "success", fname, f"{fname} -> {out_name} (耗时: {elapsed_str})")
         elif result == ocrmypdf.ExitCode.pdfa_conversion_failed:
             out_data = Path(tmp_out_path).read_bytes()
             if len(out_data) > 0:
                 state["outputs"].append((out_name, out_data))
                 if save_to_disk and output_dir:
                     (Path(output_dir) / out_name).write_bytes(out_data)
-            _log(state, "warning", fname, f"{fname}：PDF/A 转换失败，输出可能不符合标准")
+            selected_output_type = kw.get("output_type")
+            if selected_output_type == "auto":
+                _log(state, "warning", fname, f"{fname}：未能生成 PDF/A，已自动回退为普通 PDF (耗时: {elapsed_str})")
+            else:
+                _log(state, "warning", fname, f"{fname}：PDF/A 转换失败，输出可能不符合标准 (耗时: {elapsed_str})")
         elif result == ocrmypdf.ExitCode.already_done_ocr:
-            _log(state, "info", fname, f"{fname}：已包含文字层，跳过")
+            _log(state, "info", fname, f"{fname}：已包含文字层，跳过 (耗时: {elapsed_str})")
         elif result == ocrmypdf.ExitCode.encrypted_pdf:
             state["errors"].append((fname, "PDF 已加密"))
-            _log(state, "error", fname, f"{fname}：PDF 已加密，请先解密")
+            _log(state, "error", fname, f"{fname}：PDF 已加密，请先解密 (耗时: {elapsed_str})")
         else:
             state["errors"].append((fname, f"退出码：{result.name}"))
-            _log(state, "error", fname, f"{fname}：处理失败（{result.name}）")
+            _log(state, "error", fname, f"{fname}：处理失败（{result.name}）(耗时: {elapsed_str})")
     except Exception as e:
+        elapsed = time.time() - start_time
+        elapsed_str = f"{elapsed:.1f}秒"
         state["errors"].append((fname, str(e)))
-        _log(state, "error", fname, f"{fname}：{e}")
+        _log(state, "error", fname, f"{fname}：{e} (耗时: {elapsed_str})")
     finally:
         for p in (tmp_in_path, tmp_out_path):
             if p:
@@ -461,7 +488,7 @@ def _run_ocr_batch(
         out_name = _make_out_name(fname)
         state["progress_text"] = f"正在处理 {idx + 1}/{total}：{fname}"
         _ocr_one_file(state, data, fname, out_name, ocr_kwargs, backend, save_to_disk, output_dir)
-        state["progress"] = (idx + 1) / total
+        state["progress"] = (idx + 1) / total if total > 0 else 0
 
     try:
         if file_concurrency > 1:
@@ -497,8 +524,8 @@ st.sidebar.markdown(
 st.sidebar.header("OCR 引擎")
 backend = st.sidebar.radio(
     "选择后端",
-    ["Tesseract", "Calamari（远程）", "无（仅 PDF/A 转换）"],
-    index=0,
+    ["Tesseract", "Calamari（HTTP服务）", "无（仅 PDF/A 转换）"],
+    index=0,  # 默认选择 Tesseract
 )
 
 calamari_url = ""
@@ -509,7 +536,7 @@ calamari_retry = 2
 perf_strategy = "standard"
 preflight_chunk = 10
 preflight_dpi = 300
-if backend == "Calamari（远程）":
+if backend == "Calamari（HTTP服务）":
     calamari_url = st.sidebar.text_input(
         "Calamari API 地址", value="http://localhost:11800"
     )
@@ -521,8 +548,14 @@ if backend == "Calamari（远程）":
     else:
         st.sidebar.info("已连接，模型按需加载")
     _model_options = (models or []) + ["（自定义）"]
+    # 默认选择 gt4histocr 或 fraktur_19th_century
+    default_idx = 0
+    for preferred in ["gt4histocr", "fraktur_19th_century"]:
+        if preferred in _model_options:
+            default_idx = _model_options.index(preferred)
+            break
     _sel = st.sidebar.selectbox(
-        "选择模型", options=_model_options, index=0, key="calamari_model_sel",
+        "选择模型", options=_model_options, index=default_idx, key="calamari_model_sel",
     )
     if _sel == "（自定义）":
         calamari_model = st.sidebar.text_input(
@@ -533,7 +566,6 @@ if backend == "Calamari（远程）":
 
     # -- Calamari 性能策略 --
     PERF_STRATEGIES = {
-        "standard": "标准 — 服务端分割，逐页处理",
         "fast": "快速 — 客户端分割 + 批量发送",
         "preflight": "预飞 — 跨页合并批量推理（最大 GPU 利用率）",
     }
@@ -541,12 +573,22 @@ if backend == "Calamari（远程）":
         "性能策略",
         list(PERF_STRATEGIES.keys()),
         format_func=lambda x: PERF_STRATEGIES[x],
-        index=1,
-        help="标准：稳定兼容；快速：客户端切行+批量；预飞：预渲染所有页面跨页合并推理",
+        index=1,  # 默认选择 preflight
+        help="快速：客户端切行+批量发送；预飞：预渲染所有页面跨页合并推理",
     )
 
     # -- Calamari 高级选项 --
     with st.sidebar.expander("Calamari 高级选项"):
+        use_tesseract_seg = st.checkbox(
+            "使用 Tesseract 行分割",
+            value=True,  # 默认启用
+            help="使用 Tesseract 进行行分割，比投影法更准确，解决行合并问题"
+        )
+        binarize_lines = st.checkbox(
+            "对行图像进行二值化",
+            value=True,  # 默认启用
+            help="使用 Otsu 自动阈值对切割的行图像进行二值化，改善泛黄背景文档的识别质量"
+        )
         calamari_batch_mode = st.selectbox(
             "批量模式",
             ["indexed", "sequential"],
@@ -562,17 +604,26 @@ if backend == "Calamari（远程）":
             "重试次数", value=2, min_value=0, max_value=10,
         )
         if perf_strategy == "preflight":
+            import os
+            cpu_count = os.cpu_count() or 4
+            default_workers = 10  # 默认10个线程
+
             preflight_chunk = st.slider(
-                "预飞每批页数", 5, 50, 10,
-                help="每批合并多少页的行图片发送到 GPU（默认 10，约 200-400 行）",
+                "预飞每批页数", 5, 200, 100,  # 默认100
+                help="每批合并多少页的行图片发送到 GPU（默认 100，建议根据内存调整）",
             )
             preflight_dpi = st.selectbox(
                 "预飞渲染 DPI", [150, 200, 300, 400], index=2,
                 help="越高越清晰但越慢，300 适合大多数场景",
             )
+            preflight_workers = st.slider(
+                "渲染并行线程数", 1, 10, default_workers,  # 范围改为1-10，默认10
+                help=f"并行渲染页面的线程数（默认 {default_workers}）",
+            )
         else:
             preflight_chunk = 10
             preflight_dpi = 300
+            preflight_workers = 1
 
     # -- Calamari 健康诊断 --
     if calamari_url:
@@ -652,7 +703,7 @@ if backend == "Tesseract":
         "手动输入语言组合", value="",
         help="覆盖上方选择，格式如 chi_sim+eng",
     )
-elif backend == "Calamari（远程）":
+elif backend == "Calamari（HTTP服务）":
     selected_langs = [calamari_model] if calamari_model else ["gt4histocr"]
     custom_lang = ""
 else:
@@ -671,6 +722,7 @@ mode = st.sidebar.selectbox(
     "处理模式",
     list(MODE_LABELS.keys()),
     format_func=lambda x: MODE_LABELS[x],
+    index=3,  # 默认选择 redo
 )
 
 # -- 预处理 --
@@ -703,11 +755,20 @@ if backend == "Tesseract":
         tess_downsample = st.checkbox("自动缩小超大图片", value=True)
 
 # -- 输出设置 --
+OUTPUT_MODE_OPTIONS = {
+    "普通 PDF": "pdf",
+    "尽量 PDF/A（失败则回退普通 PDF）": "auto",
+    "严格 PDF/A": "pdfa",
+}
+
 with st.sidebar.expander("输出设置"):
-    output_type = st.selectbox(
-        "输出格式",
-        ["pdfa", "pdf", "pdfa-1", "pdfa-2", "pdfa-3"],
+    output_mode = st.selectbox(
+        "输出模式",
+        list(OUTPUT_MODE_OPTIONS.keys()),
+        index=0,
+        help="普通 PDF：成功率最高；尽量 PDF/A：能归档则归档，否则自动回退普通 PDF；严格 PDF/A：明确要求 PDF/A 输出。",
     )
+    output_type = OUTPUT_MODE_OPTIONS[output_mode]
     pdf_renderer = st.selectbox(
         "PDF 渲染器",
         ["auto", "hocr", "sandwich"],
@@ -723,7 +784,7 @@ with st.sidebar.expander("输出设置"):
 # -- 性能设置 --
 with st.sidebar.expander("性能设置"):
     cpu_count = os.cpu_count() or 4
-    if backend == "Calamari（远程）":
+    if backend == "Calamari（HTTP服务）":
         default_jobs = 1
         jobs_help = "Calamari GPU 后端建议 jobs=1，避免多进程争抢 GPU 资源"
     else:
@@ -789,18 +850,13 @@ if uploaded_files:
     # -- 文件列表预览 --
     st.subheader(f"已上传：{len(uploaded_files)} 个文件")
     file_info = []
-    total_pages = 0
     for f in uploaded_files:
-        data = f.getvalue()
-        pages = get_pdf_page_count(data)
-        total_pages += max(pages, 0)
         file_info.append({
             "文件名": f.name,
-            "大小 (KB)": len(data) // 1024,
-            "页数": pages,
+            "大小 (MB)": f.size / (1024 * 1024),
         })
     st.dataframe(file_info, width="stretch", hide_index=True)
-    st.caption(f"共计：{total_pages} 页")
+    st.caption("提示：页数统计将在处理时显示")
 
     # -- 页码过滤 --
     pages_filter = st.text_input(
@@ -826,7 +882,19 @@ if uploaded_files:
                 st.error(f"无法创建输出目录：{e}")
                 st.stop()
 
+        # [DEBUG] 显示UI参数状态
+        print(f"[UI-DEBUG] deskew checkbox value: {deskew}", flush=True)
+        print(f"[UI-DEBUG] backend: {backend}", flush=True)
+
         # 构建 OCR 参数
+        # 处理 mode=redo 的兼容性问题
+        if mode == "redo":
+            # --mode redo 与这些选项不兼容，自动禁用
+            if clean_final or remove_background:
+                st.warning("⚠️ 'redo' 模式与最终清理、移除背景不兼容，已自动禁用这些选项")
+            clean_final = False
+            remove_background = False
+
         ocr_kwargs: dict = {
             "mode": mode if mode != "default" else None,
             "output_type": output_type,
@@ -862,29 +930,45 @@ if uploaded_files:
             ocr_kwargs["tesseract_downsample_large_images"] = tess_downsample
             thresh_map = {"auto": 0, "otsu": 1, "sauvola": 2}
             ocr_kwargs["tesseract_thresholding"] = thresh_map.get(tess_threshold, 0)
-        elif backend == "Calamari（远程）":
+        elif backend == "Calamari（HTTP服务）":
             ocr_kwargs["ocr_engine"] = "calamari"
-            seg_mode = "server" if perf_strategy == "standard" else "client"
+            seg_mode = "client"  # 总是使用客户端分割
             is_preflight = perf_strategy == "preflight"
-            import ocrmypdf_calamari
-            ocrmypdf_calamari._config.update({
-                "url": calamari_url or "http://localhost:11800",
-                "model": calamari_model or "gt4histocr",
-                "timeout": calamari_timeout,
-                "batch_mode": calamari_batch_mode,
-                "retry": calamari_retry,
-                "segmentation": seg_mode,
-                "preflight": is_preflight,
-                "preflight_chunk": preflight_chunk,
-                "preflight_dpi": preflight_dpi,
-            })
-            ocrmypdf_calamari._client = None
+            print(f"[DEBUG] perf_strategy={perf_strategy}, is_preflight={is_preflight}", flush=True)
+            ocr_kwargs["calamari_url"] = calamari_url or "http://localhost:11800"
+            ocr_kwargs["calamari_model"] = calamari_model or "gt4histocr"
+            ocr_kwargs["calamari_timeout"] = calamari_timeout
+            ocr_kwargs["calamari_batch_mode"] = calamari_batch_mode
+            ocr_kwargs["calamari_segmentation"] = seg_mode
+            if use_tesseract_seg:
+                ocr_kwargs["calamari_use_tesseract_segmentation"] = True
+            if binarize_lines:
+                ocr_kwargs["calamari_binarize_lines"] = True
+            if deskew:
+                ocr_kwargs["calamari_deskew"] = True
+                print(f"[UI-DEBUG] Set calamari_deskew=True", flush=True)
+            else:
+                print(f"[UI-DEBUG] deskew is False, not setting calamari_deskew", flush=True)
+            if is_preflight:
+                ocr_kwargs["calamari_preflight"] = True
+                ocr_kwargs["calamari_preflight_chunk"] = preflight_chunk
+                ocr_kwargs["calamari_preflight_dpi"] = preflight_dpi
+                ocr_kwargs["calamari_preflight_workers"] = preflight_workers
+            # Calamari使用自己的deskew实现，移除OCRmyPDF内置的deskew参数
+            ocr_kwargs.pop("deskew", None)
         elif backend == "无（仅 PDF/A 转换）":
             ocr_kwargs["ocr_engine"] = "none"
             ocr_kwargs["pdf_renderer"] = "auto"
 
         # 移除 None 值
         ocr_kwargs = {k: v for k, v in ocr_kwargs.items() if v is not None}
+
+        # [DEBUG] 显示最终参数
+        print(f"[UI-DEBUG] Final ocr_kwargs keys: {list(ocr_kwargs.keys())}", flush=True)
+        if "calamari_deskew" in ocr_kwargs:
+            print(f"[UI-DEBUG] calamari_deskew in final kwargs: {ocr_kwargs['calamari_deskew']}", flush=True)
+        else:
+            print(f"[UI-DEBUG] calamari_deskew NOT in final kwargs", flush=True)
 
         # 快照文件数据（防止 rerun 后 uploaded_files 丢失）
         files_data = [(f.name, f.getvalue()) for f in uploaded_files]

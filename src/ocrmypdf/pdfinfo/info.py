@@ -358,13 +358,15 @@ class PageInfo:
             image_areas.append(image.printed_area)
 
         total_drawn_area = sum(image_areas)
-        if total_drawn_area == 0:
+        if total_drawn_area == 0 or not image_dpis:
             return None
 
         weights = [area / total_drawn_area for area in image_areas]
         # Calculate harmonic mean of DPIs weighted by area
         weighted_dpi = statistics.harmonic_mean(image_dpis, weights)
         max_dpi = max(image_dpis)
+        if max_dpi == 0:
+            return None
         dpi_average_max_ratio = weighted_dpi / max_dpi
 
         arg_max_dpi = image_dpis.index(max_dpi)
@@ -460,7 +462,8 @@ class PdfInfo:
     def min_version(self) -> str:
         """Return minimum PDF version needed to render this PDF."""
         # The minimum PDF is the maximum version that any particular page needs
-        return max(page.min_version for page in self.pages if page)
+        versions = [page.min_version for page in self.pages if page]
+        return max(versions) if versions else "1.4"
 
     @property
     def has_userunit(self) -> bool:

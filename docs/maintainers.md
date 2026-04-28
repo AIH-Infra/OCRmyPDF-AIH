@@ -69,15 +69,11 @@ architectures.
 
 ### Versioning scheme
 
-OCRmyPDF uses hatch-vcs for versioning, which derives the version from
-Git as a single source of truth. This may be unsuitable for some
-distributions, e.g. to indicate that your distribution modifies OCRmyPDF
-in some way.
+This AIH public copy uses a package-local version file at
+`src/ocrmypdf/_version.py` as the release version source.
 
-You can patch the `__version__` variable in `src/ocrmypdf/_version.py`
-if necessary, or set the environment variable
-`SETUPTOOLS_SCM_PRETEND_VERSION` to the required version, if you need to
-override versioning for some reason.
+If you need to publish a modified distribution, update the
+`__version__` value in that file accordingly.
 
 ### jbig2enc
 

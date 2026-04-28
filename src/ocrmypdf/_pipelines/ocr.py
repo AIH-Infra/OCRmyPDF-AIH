@@ -102,7 +102,7 @@ def exec_concurrent(context: PdfContext, executor: Executor) -> Sequence[str]:
     """Execute the OCR pipeline concurrently."""
     options = context.options
     jobs = options.jobs or available_cpu_count()
-    max_workers = min(len(context.pdfinfo), jobs)
+    max_workers = max(1, min(len(context.pdfinfo), jobs))
     if max_workers > 1:
         log.info("Starting processing with %d workers concurrently", max_workers)
 

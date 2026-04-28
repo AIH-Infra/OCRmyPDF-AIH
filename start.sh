@@ -14,15 +14,6 @@ echo "  Batch PDF OCR Pipeline"
 echo "=========================================="
 echo ""
 
-# Release port 6106
-if command -v lsof &> /dev/null; then
-    PID=$(lsof -ti:6106 2>/dev/null)
-    if [ -n "$PID" ]; then
-        kill -9 $PID 2>/dev/null
-    fi
-fi
-
-# Check venv
 if [ ! -f ".venv/bin/activate" ]; then
     echo "[Error] Virtual environment not found"
     echo "Please run ./install.sh first"
@@ -31,8 +22,12 @@ fi
 
 source .venv/bin/activate
 
-echo "URL: http://localhost:6106"
+export PYTHONWARNINGS=ignore
+
+echo "Web UI will choose an available port starting from 8501."
+echo "Your default browser should open automatically."
+echo "If 8501 is unavailable or reserved, the app will try the next port."
 echo "Press Ctrl+C to stop"
 echo ""
 
-python -m streamlit run misc/_webservice_pro.py --server.port 6106
+ocrmypdf-aih-webui

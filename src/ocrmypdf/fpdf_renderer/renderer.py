@@ -94,15 +94,21 @@ class CoordinateTransform:
     @property
     def page_width_pt(self) -> float:
         """Page width in PDF points."""
+        if self.dpi == 0:
+            return 0.0
         return self.page_width_px * 72.0 / self.dpi
 
     @property
     def page_height_pt(self) -> float:
         """Page height in PDF points."""
+        if self.dpi == 0:
+            return 0.0
         return self.page_height_px * 72.0 / self.dpi
 
     def px_to_pt(self, value: float) -> float:
         """Convert pixels to PDF points."""
+        if self.dpi == 0:
+            return 0.0
         return value * 72.0 / self.dpi
 
     def bbox_to_pt(self, bbox) -> tuple[float, float, float, float]:
@@ -348,14 +354,17 @@ class Fpdf2PdfRenderer:
             # calculate intercept from font metrics
             default_font_manager = self.multi_font_manager.fonts['NotoSans-Regular']
             ascent, descent, units_per_em = default_font_manager.get_font_metrics()
-            ascent_norm = ascent / units_per_em
-            descent_norm = descent / units_per_em
-            # Baseline intercept based on font metrics
-            intercept_pt = (
-                -abs(descent_norm)
-                * line_size_height
-                / (ascent_norm + abs(descent_norm))
-            )
+            if units_per_em == 0:
+                intercept_pt = 0.0
+            else:
+                ascent_norm = ascent / units_per_em
+                descent_norm = descent / units_per_em
+                # Baseline intercept based on font metrics
+                intercept_pt = (
+                    -abs(descent_norm)
+                    * line_size_height
+                    / (ascent_norm + abs(descent_norm))
+                )
 
         slope_angle_deg = degrees(atan(slope)) if slope != 0.0 else 0.0
 
@@ -524,6 +533,8 @@ class Fpdf2PdfRenderer:
         if expected_h <= 0:
             return True
 
+        if line_size_height == 0:
+            return True
         actual_aspect = line_size_width / line_size_height
         expected_aspect = expected_w / expected_h
         ratio = actual_aspect / expected_aspect

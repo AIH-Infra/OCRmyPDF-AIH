@@ -25,9 +25,11 @@ tmp/
 venv*/
 /debug_tests.py
 *.traineddata
+.tessdata/
 /private
 /coverage.xml
 /issuepdf
+tests/resources/*_out.pdf
 
 # Package building
 *.egg-info/
@@ -39,13 +41,15 @@ pip-wheel-metadata/
 # Code coverage
 htmlcov/
 
-# Automatically generated files
+# Build and generated docs files
 docs/_build/
 docs/_static/
 docs/_templates/
 docs/Makefile
-src/ocrmypdf/_version.py
 
 .idea/
 .aider*
 CLAUDE.md
+
+# Local Claude settings
+.claude/

@@ -189,8 +189,11 @@ def rasterize_pdf(
             if needs_low_dpi_resize:
                 # Resize to the dimensions that would have resulted from the
                 # original low DPI request
-                scale_x = raster_dpi.x / effective_dpi.x
-                scale_y = raster_dpi.y / effective_dpi.y
+                if effective_dpi.x == 0 or effective_dpi.y == 0:
+                    scale_x, scale_y = 1.0, 1.0
+                else:
+                    scale_x = raster_dpi.x / effective_dpi.x
+                    scale_y = raster_dpi.y / effective_dpi.y
                 new_size = (
                     max(1, int(round(im.width * scale_x))),
                     max(1, int(round(im.height * scale_y))),

@@ -1,0 +1,12 @@
+[theme]
+base="light"
+primaryColor="#E8751A"
+backgroundColor="#FFFFFF"
+secondaryBackgroundColor="#FFF5EB"
+textColor="#262730"
+
+[server]
+maxUploadSize=1024
+
+[runner]
+fastReruns=false

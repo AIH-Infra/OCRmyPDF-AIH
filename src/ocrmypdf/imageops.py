@@ -47,6 +47,11 @@ def _calculate_downsample(
         max_bytes: The maximum number of bytes in the image. RGB is counted as 4
             bytes; all other modes are counted as 1 byte.
     """
+    # Prevent division by zero if image size is invalid
+    if image_size[0] == 0 or image_size[1] == 0:
+        log.warning(f"Invalid image size {image_size}, returning minimum size (1, 1)")
+        return (1, 1)
+
     size = image_size
 
     if max_size is not None:
@@ -55,7 +60,9 @@ def _calculate_downsample(
         if size_factor < 1.0:
             log.debug("Resizing image to fit image dimensions limit")
             size = floor(size[0] * size_factor), floor(size[1] * size_factor)
-            if size[0] == 0:
+            if size[0] == 0 and size[1] == 0:
+                size = 1, 1
+            elif size[0] == 0:
                 size = 1, min(size[1], max_size[1])
             elif size[1] == 0:
                 size = min(size[0], max_size[0]), 1
@@ -64,6 +71,11 @@ def _calculate_downsample(
         log.debug("Resizing image to fit image pixel limit")
         pixels_factor = sqrt(max_pixels / (size[0] * size[1]))
         size = floor(size[0] * pixels_factor), floor(size[1] * pixels_factor)
+        # Ensure size doesn't become (0, 0) after downsampling
+        if size[0] == 0:
+            size = 1, max(size[1], 1)
+        if size[1] == 0:
+            size = max(size[0], 1), 1
 
     if max_bytes is not None:
         bpp = bytes_per_pixel
@@ -138,6 +150,12 @@ def downsample_image(
 
     original_size = image.size
     original_dpi = image.info['dpi']
+
+    # Prevent division by zero if original size is invalid
+    if original_size[0] == 0 or original_size[1] == 0:
+        log.warning(f"Invalid original image size {original_size}, skipping DPI adjustment")
+        return image
+
     image = image.resize(
         new_size,
         resample=resample_mode,

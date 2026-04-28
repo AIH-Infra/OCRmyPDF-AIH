@@ -102,43 +102,174 @@ echo ""
 # ============================================
 echo "[4/4] Checking Tesseract & Ghostscript..."
 
-for prog in tesseract gs; do
-    if command -v $prog &>/dev/null; then
-        echo "[Found] $prog: $($prog --version 2>&1 | head -1)"
+COMMON_TESSERACT_LANGS="eng chi_sim chi_tra deu fra jpn kor lat"
+
+refresh_shell_commands() {
+    hash -r 2>/dev/null || true
+}
+
+ensure_brew_in_path() {
+    if command -v brew &>/dev/null; then
+        eval "$(brew shellenv)" 2>/dev/null || true
+    fi
+}
+
+detect_tesseract() {
+    if command -v tesseract &>/dev/null; then
+        return 0
+    fi
+
+    for candidate in \
+        /opt/homebrew/bin/tesseract \
+        /usr/local/bin/tesseract \
+        /usr/bin/tesseract
+    do
+        if [ -x "$candidate" ]; then
+            export PATH="$(dirname "$candidate"):$PATH"
+            refresh_shell_commands
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+detect_ghostscript() {
+    if command -v gs &>/dev/null; then
+        return 0
+    fi
+
+    for candidate in \
+        /opt/homebrew/bin/gs \
+        /usr/local/bin/gs \
+        /usr/bin/gs
+    do
+        if [ -x "$candidate" ]; then
+            export PATH="$(dirname "$candidate"):$PATH"
+            refresh_shell_commands
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+report_tesseract_languages() {
+    if ! detect_tesseract; then
+        return 0
+    fi
+
+    available_langs="$(tesseract --list-langs 2>/dev/null | tail -n +2 | tr '\n' ' ')"
+    missing_langs=""
+    for lang in $COMMON_TESSERACT_LANGS; do
+        case " $available_langs " in
+            *" $lang "*) ;;
+            *) missing_langs="$missing_langs $lang" ;;
+        esac
+    done
+
+    if [ -z "$missing_langs" ]; then
+        echo "[OK] Common Tesseract language packs available: $COMMON_TESSERACT_LANGS"
     else
-        echo "[Info] $prog not found, trying auto-install..."
+        echo "[Warning] Missing common Tesseract language packs:$missing_langs"
         if [[ "$OSTYPE" == "darwin"* ]]; then
-            if command -v brew &>/dev/null; then
-                if [ "$prog" = "tesseract" ]; then
-                    brew install tesseract tesseract-lang 2>/dev/null && echo "[OK] Tesseract installed" || \
-                        echo "[Warning] brew install tesseract tesseract-lang"
-                else
-                    brew install ghostscript 2>/dev/null && echo "[OK] Ghostscript installed" || \
-                        echo "[Warning] brew install ghostscript"
-                fi
-            else
-                echo "[Warning] Homebrew not found"
-            fi
+            echo "          Try: brew install tesseract-lang"
+        elif command -v apt &>/dev/null; then
+            echo "          Try: sudo apt install tesseract-ocr-eng tesseract-ocr-chi-sim tesseract-ocr-chi-tra tesseract-ocr-deu tesseract-ocr-fra tesseract-ocr-jpn tesseract-ocr-kor tesseract-ocr-lat"
         else
-            if command -v apt &>/dev/null; then
-                if [ "$prog" = "tesseract" ]; then
-                    sudo apt install -y tesseract-ocr tesseract-ocr-chi-sim 2>/dev/null && echo "[OK] Tesseract installed" || \
-                        echo "[Warning] sudo apt install tesseract-ocr"
-                else
-                    sudo apt install -y ghostscript 2>/dev/null && echo "[OK] Ghostscript installed" || \
-                        echo "[Warning] sudo apt install ghostscript"
-                fi
-            else
-                echo "[Warning] Please install $prog manually"
-            fi
+            echo "          Install the missing .traineddata files for your Tesseract installation."
         fi
     fi
-done
+}
+
+if detect_tesseract; then
+    echo "[Found] tesseract: $(tesseract --version 2>&1 | head -1)"
+else
+    echo "[Info] tesseract not found, trying auto-install..."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        if command -v brew &>/dev/null; then
+            ensure_brew_in_path
+            if brew install tesseract 2>/dev/null; then
+                brew install tesseract-lang 2>/dev/null || \
+                    echo "[Info] Common language package tesseract-lang was not installed"
+            else
+                echo "[Warning] brew install tesseract failed"
+            fi
+            ensure_brew_in_path
+            refresh_shell_commands
+        else
+            echo "[Warning] Homebrew not found"
+        fi
+    else
+        if command -v apt &>/dev/null; then
+            sudo apt update 2>/dev/null || true
+            if sudo apt install -y tesseract-ocr 2>/dev/null; then
+                sudo apt install -y \
+                    tesseract-ocr-eng \
+                    tesseract-ocr-chi-sim \
+                    tesseract-ocr-chi-tra \
+                    tesseract-ocr-deu \
+                    tesseract-ocr-fra \
+                    tesseract-ocr-jpn \
+                    tesseract-ocr-kor \
+                    tesseract-ocr-lat 2>/dev/null || \
+                    echo "[Info] Some common Tesseract language packs were not installed"
+            else
+                echo "[Warning] sudo apt install tesseract-ocr failed"
+            fi
+            refresh_shell_commands
+        else
+            echo "[Warning] Please install tesseract manually"
+        fi
+    fi
+
+    if detect_tesseract; then
+        echo "[OK] tesseract is now available: $(tesseract --version 2>&1 | head -1)"
+    else
+        echo "[Warning] Tesseract install did not become available in this shell."
+        echo "          Please install it manually or open a new terminal and try again."
+    fi
+fi
+
+report_tesseract_languages
+
+if detect_ghostscript; then
+    echo "[Found] gs: $(gs --version 2>&1 | head -1)"
+else
+    echo "[Info] gs not found, trying auto-install..."
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        if command -v brew &>/dev/null; then
+            ensure_brew_in_path
+            brew install ghostscript 2>/dev/null && echo "[OK] Ghostscript installed" || \
+                echo "[Warning] brew install ghostscript"
+            ensure_brew_in_path
+            refresh_shell_commands
+        else
+            echo "[Warning] Homebrew not found"
+        fi
+    else
+        if command -v apt &>/dev/null; then
+            sudo apt update 2>/dev/null || true
+            sudo apt install -y ghostscript 2>/dev/null && echo "[OK] Ghostscript installed" || \
+                echo "[Warning] sudo apt install ghostscript"
+            refresh_shell_commands
+        else
+            echo "[Warning] Please install gs manually"
+        fi
+    fi
+
+    if detect_ghostscript; then
+        echo "[OK] gs is now available: $(gs --version 2>&1 | head -1)"
+    else
+        echo "[Warning] Ghostscript install did not become available in this shell."
+    fi
+fi
 
 echo ""
 echo "============================================================"
 echo "   Installation complete!"
 echo "   Run ./start.sh to launch the Web UI."
-echo "   URL: http://localhost:6106"
+echo "   The app starts from port 8501 and will use the next"
+echo "   available port if needed, then open in your default browser."
 echo "============================================================"
 echo ""

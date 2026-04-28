@@ -235,6 +235,8 @@ class ImageInfo:
         """Physical area of the image in square inches."""
         if not self.renderable:
             return 0.0
+        if self.dpi.x == 0 or self.dpi.y == 0:
+            return 0.0
         return float((self.width / self.dpi.x) * (self.height / self.dpi.y))
 
     def __repr__(self):

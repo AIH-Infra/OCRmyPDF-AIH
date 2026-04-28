@@ -344,7 +344,8 @@ def validate(pdfinfo, options):
     # As of Tesseract 4.1, 3 threads is the most effective on a 4 core/8 thread system.
     if not os.environ.get('OMP_THREAD_LIMIT', '').isnumeric():
         jobs = options.jobs or available_cpu_count()
-        tess_threads = clamp(jobs // len(pdfinfo), 1, 3)
+        page_count = len(pdfinfo) if len(pdfinfo) > 0 else 1
+        tess_threads = clamp(jobs // page_count, 1, 3)
     else:
         tess_threads = int(os.environ['OMP_THREAD_LIMIT'])
     # Store the thread limit in options - it will be passed to subprocess env
