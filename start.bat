@@ -17,6 +17,7 @@ if not exist .venv\Scripts\activate.bat (
 
 call .venv\Scripts\activate.bat
 set PYTHONWARNINGS=ignore
+set PYTHONDONTWRITEBYTECODE=1
 if exist "%CD%\.tessdata" set "TESSDATA_PREFIX=%CD%\.tessdata"
 
 echo Web UI will choose an available port starting from 8501.

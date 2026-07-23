@@ -1,20 +1,28 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import socket
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 DEFAULT_STREAMLIT_PORT = 8501
 MAX_PORT_ATTEMPTS = 1000
-DEFAULT_STREAMLIT_HOST = "127.0.0.1"
+DEFAULT_STREAMLIT_HOST = "0.0.0.0"
+DEFAULT_BROWSER_HOST = "localhost"
+STARTING_LOCK_TTL_SECONDS = 120
 
 
 def _iter_probe_hosts(host: str) -> tuple[str, ...]:
     if host in {"127.0.0.1", "localhost"}:
         return ("127.0.0.1", "localhost", "::1")
+    if host == "0.0.0.0":
+        return ("127.0.0.1", "localhost", "0.0.0.0")
     return (host,)
 
 
@@ -140,7 +148,7 @@ def _find_available_port(
     )
 
 
-def _build_streamlit_cmd(webui_path: Path, host: str, port: int) -> list[str]:
+def _build_streamlit_cmd(webui_path: Path, host: str, port: int, browser_host: str) -> list[str]:
     return [
         sys.executable,
         "-m",
@@ -151,28 +159,127 @@ def _build_streamlit_cmd(webui_path: Path, host: str, port: int) -> list[str]:
         host,
         "--server.port",
         str(port),
+        "--browser.serverAddress",
+        browser_host,
+        "--browser.serverPort",
+        str(port),
         "--server.headless",
         "false",
+        "--server.fileWatcherType",
+        "none",
     ]
 
 
+def _project_lock_path() -> Path:
+    project_root = Path(__file__).resolve().parents[2]
+    digest = hashlib.sha1(str(project_root).encode("utf-8")).hexdigest()[:12]
+    return Path(tempfile.gettempdir()) / f"ocrmypdf-aih-webui-{digest}.lock"
+
+
+def _read_lock(lock_path: Path) -> dict:
+    try:
+        return json.loads(lock_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _is_lock_active(lock_path: Path, data: dict) -> bool:
+    port = data.get("port")
+    host = str(data.get("host") or DEFAULT_STREAMLIT_HOST)
+    if isinstance(port, int) and _is_port_listening(host, port):
+        return True
+    try:
+        age = time.time() - lock_path.stat().st_mtime
+    except OSError:
+        return False
+    return port is None and age < STARTING_LOCK_TTL_SECONDS
+
+
+def _write_lock(lock_path: Path, *, host: str, browser_host: str, port: int | None) -> None:
+    payload = {
+        "pid": os.getpid(),
+        "host": host,
+        "browser_host": browser_host,
+        "port": port,
+        "project_root": str(Path(__file__).resolve().parents[2]),
+    }
+    lock_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+
+def _acquire_single_instance_lock(host: str, browser_host: str) -> Path | None:
+    lock_path = _project_lock_path()
+    if lock_path.exists():
+        data = _read_lock(lock_path)
+        if _is_lock_active(lock_path, data):
+            port = data.get("port")
+            if isinstance(port, int):
+                print(f"[OCRmyPDF-AIH] Web UI is already running at http://{browser_host}:{port}")
+            else:
+                print("[OCRmyPDF-AIH] Web UI is already starting. Please use the existing window.")
+            return None
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
+
+    flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
+    try:
+        fd = os.open(str(lock_path), flags)
+    except FileExistsError:
+        print("[OCRmyPDF-AIH] Web UI is already starting. Please use the existing window.")
+        return None
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        payload = {
+            "pid": os.getpid(),
+            "host": host,
+            "browser_host": browser_host,
+            "port": None,
+            "project_root": str(Path(__file__).resolve().parents[2]),
+        }
+        json.dump(payload, f, ensure_ascii=False)
+    return lock_path
+
+
 def main() -> int:
+    os.environ.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     webui_path = Path(__file__).with_name("webui.py")
     host = os.environ.get("OCRMYPDF_AIH_HOST", DEFAULT_STREAMLIT_HOST)
+    browser_host = os.environ.get("OCRMYPDF_AIH_BROWSER_HOST", DEFAULT_BROWSER_HOST)
     start_port = _get_start_port()
     last_error: RuntimeError | None = None
 
     for retry in range(2):
         port = _find_available_port(host=host, start_port=start_port + retry)
-        print(f"[OCRmyPDF-AIH] Web UI starting at http://{host}:{port}")
-        if host == "127.0.0.1":
-            print(f"[OCRmyPDF-AIH] Also available at http://localhost:{port}")
+        if host == "0.0.0.0":
+            print(f"[OCRmyPDF-AIH] Web UI listening on all interfaces at 0.0.0.0:{port}")
+            print(f"[OCRmyPDF-AIH] Open locally at http://{browser_host}:{port}")
+            print(f"[OCRmyPDF-AIH] Also available at http://127.0.0.1:{port}")
+        else:
+            print(f"[OCRmyPDF-AIH] Web UI starting at http://{host}:{port}")
+            if host == "127.0.0.1":
+                print(f"[OCRmyPDF-AIH] Also available at http://localhost:{port}")
 
-        cmd = _build_streamlit_cmd(webui_path, host, port)
+        cmd = _build_streamlit_cmd(webui_path, host, port, browser_host)
         rc = subprocess.call(cmd)
-        if rc == 0 or retry == 1:
+        if rc == 0:
             return rc
-        last_error = RuntimeError(f"Streamlit failed to bind selected port {port}, retrying.")
+
+        port_still_unavailable = not _is_port_available(host, port)
+        if retry == 0 and port_still_unavailable:
+            print(
+                f"[OCRmyPDF-AIH] Streamlit exited with code {rc}, and port {port} is no longer available. "
+                "Retrying with the next port."
+            )
+            last_error = RuntimeError(
+                f"Streamlit failed to bind selected port {port}, retrying."
+            )
+            continue
+
+        print(
+            f"[OCRmyPDF-AIH] Streamlit exited with code {rc}. "
+            "Not retrying automatically because this does not look like a port conflict."
+        )
+        return rc
 
     raise last_error if last_error else RuntimeError("Failed to launch Web UI.")
 

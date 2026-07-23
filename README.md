@@ -1,9 +1,9 @@
 <!-- SPDX-FileCopyrightText: 2025 Baireinhold / AIH-Infra -->
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 
-# OCRmyPDF-AIH
+# OCRmyPDF-AIH 0.7.0
 
-批量 PDF OCR 处理管线，支持 Tesseract / Calamari 双后端，并提供 Streamlit Web UI。
+批量 PDF OCR 处理管线，支持 Tesseract、PaddleOCR、Calamari 和 Chrome ScreenAI 后端，并提供 Streamlit Web UI。
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
@@ -33,7 +33,7 @@ OCRmyPDF-AIH 是 [AIH-Infra](https://github.com/AIH-Infra) 的 OCR 处理组件�
 
 | 特性 | OCRmyPDF | OCRmyPDF-AIH |
 |------|----------|---------------|
-| OCR 后端 | Tesseract | Tesseract + Calamari（可选） |
+| OCR 后端 | Tesseract | Tesseract + PaddleOCR + Calamari + Chrome ScreenAI（可选） |
 | 使用方式 | CLI | CLI + Streamlit Web UI |
 | 批量处理 | 逐文件命令行 | Web UI 多文件批量处理 |
 | 进度显示 | 文件级 | 页面级进度反馈 |
@@ -50,12 +50,22 @@ OCRmyPDF-AIH 是 [AIH-Infra](https://github.com/AIH-Infra) 的 OCR 处理组件�
 说明：
 - Tesseract 是默认后端。
 - Calamari 不是内置依赖，而是可选的外部 HTTP 服务。
-- Web UI 默认从 `http://127.0.0.1:8501` 开始尝试启动；若端口被占用或在 Windows 上命中系统保留端口，会自动递增到下一个可用端口。
+- Chrome ScreenAI 已集成 vendored `locro` 适配代码；运行时仍需要本机可用的 Chrome ScreenAI DLL 与模型组件。
+- Web UI 上传内容和临时输出采用任务级磁盘缓存；任务完成后释放输入缓存，清除结果时释放下载缓存。
+- Chrome ScreenAI 单书页内并行默认使用 8 个独立 worker，最高 16 个。
+- Web UI 默认监听 `0.0.0.0:8501`，也就是本机所有网口；本机浏览器默认打开 `http://localhost:8501`。若端口被占用或在 Windows 上命中系统保留端口，会自动递增到下一个可用端口。
 - Streamlit 通常会自动打开默认浏览器；若未自动打开，请以终端输出的最终 URL 为准。
 - 仓库提供跨平台安装脚本，但系统依赖的自动安装属于 best effort：Windows 依赖 `winget`，macOS 依赖 Homebrew，Linux 安装脚本优先支持 `apt`（Ubuntu / Debian）。
 - 安装目标是稳定安装 Tesseract 主程序、Ghostscript 和常用 Tesseract 语言包，并清楚提示缺失语言包；不承诺自动安装所有 Tesseract 语言包。
 - 常用语言包包括：`eng`、`chi_sim`、`chi_tra`、`deu`、`fra`、`jpn`、`kor`、`lat`。
 - 如果自动安装系统依赖失败，请按脚本提示手动安装 Tesseract / Ghostscript 后重新运行启动脚本。
+
+## 批处理规模说明
+
+- Web UI 适合交互式处理单本大书或几十个文件。
+- 大批量任务应优先使用磁盘输出，避免在浏览器中生成大体积 ZIP。
+- Chrome ScreenAI 的单书页内并行与多书并行是互斥策略，避免形成并发乘法。
+- 上千文件的长期无人值守任务建议由外部任务队列或 AIH OCR MCP 调度；本版本不宣称提供断点续跑式作业管理。
 
 ## 使用方式一：克隆源码后直接运行
 
@@ -64,7 +74,7 @@ OCRmyPDF-AIH 是 [AIH-Infra](https://github.com/AIH-Infra) 的 OCR 处理组件�
 ### 1. 克隆仓库
 
 ```bash
-git clone https://github.com/Baireinhold/OCRmyPDF-AIH.git
+git clone https://github.com/AIH-Infra/OCRmyPDF-AIH.git
 cd OCRmyPDF-AIH
 ```
 
@@ -156,13 +166,15 @@ ocrmypdf-aih-webui
 如需修改监听地址或起始尝试端口，可设置环境变量：
 
 ```bash
-OCRMYPDF_AIH_HOST=127.0.0.1
+OCRMYPDF_AIH_HOST=0.0.0.0
+OCRMYPDF_AIH_BROWSER_HOST=localhost
 OCRMYPDF_AIH_PORT=8501
 ocrmypdf-aih-webui
 ```
 
 其中：
-- `OCRMYPDF_AIH_HOST`：监听地址，默认 `127.0.0.1`
+- `OCRMYPDF_AIH_HOST`：监听地址，默认 `0.0.0.0`
+- `OCRMYPDF_AIH_BROWSER_HOST`：本机默认打开的浏览器地址，默认 `localhost`
 - `OCRMYPDF_AIH_PORT`：起始尝试端口，默认 `8501`；如果该端口不可用，程序会自动继续尝试更高端口
 
 ## Web UI 说明

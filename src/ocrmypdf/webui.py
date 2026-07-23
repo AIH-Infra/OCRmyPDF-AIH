@@ -6,9 +6,11 @@
 from __future__ import annotations
 
 import io
+import base64
 import json
 import logging
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,6 +27,8 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 
 import pikepdf
 import streamlit as st
+
+from ocrmypdf.aih_file_lock import file_job_lock
 
 # 禁用 Streamlit 日志（主进程和子进程）
 for logger_name in ['streamlit', 'streamlit.runtime', 'streamlit.runtime.scriptrunner_utils',
@@ -54,6 +58,11 @@ if _pkg_dir not in sys.path:
 # 预初始化 OCRmyPDF 插件基础设施（防止 Streamlit 模块重载丢失注册状态）
 from ocrmypdf.api import setup_plugin_infrastructure as _setup_plugins
 _setup_plugins()
+
+try:
+    from ocrmypdf.aih_line_detection import discover_paddle_env
+except Exception:
+    discover_paddle_env = None
 
 # ---------------------------------------------------------------------------
 # 页面配置
@@ -143,7 +152,7 @@ if "ocr" not in st.session_state:
         "logs": [],          # [{type, file, msg}]
         "progress": 0.0,
         "progress_text": "",
-        "outputs": [],       # [(name, bytes)]
+        "outputs": [],       # [(name, path)]
         "errors": [],        # [(name, err)]
         "stop": False,
         "done": False,
@@ -151,6 +160,8 @@ if "ocr" not in st.session_state:
         "page_current": 0,
         "page_total": 0,
         "page_desc": "",
+        "task_dir": "",
+        "upload_generation": 0,
     }
 # 取出引用，后台线程直接操作这个 dict
 _ocr_state: dict = st.session_state.ocr
@@ -366,8 +377,186 @@ def _log(state: dict, level: str, fname: str, msg: str):
     state["logs"].append({"type": level, "file": fname, "msg": msg})
 
 
+def _cleanup_task_dir(state: dict):
+    """Remove disk-backed upload/output caches owned by the current UI task."""
+    task_dir = state.get("task_dir")
+    if task_dir:
+        shutil.rmtree(task_dir, ignore_errors=True)
+    state["task_dir"] = ""
+
+
+def _create_task_dir(state: dict) -> Path:
+    _cleanup_task_dir(state)
+    task_dir = Path(tempfile.mkdtemp(prefix="ocrmypdf-aih-webui-"))
+    (task_dir / "inputs").mkdir()
+    (task_dir / "outputs").mkdir()
+    state["task_dir"] = str(task_dir)
+    return task_dir
+
+
+def _spool_uploads_to_disk(uploaded_files, task_dir: Path) -> list[tuple[str, str]]:
+    """Stream browser uploads to task storage without retaining duplicate byte arrays."""
+    files: list[tuple[str, str]] = []
+    for index, uploaded in enumerate(uploaded_files):
+        safe_name = Path(uploaded.name).name
+        input_path = task_dir / "inputs" / f"{index:06d}_{safe_name}"
+        uploaded.seek(0)
+        with input_path.open("wb") as target:
+            shutil.copyfileobj(uploaded, target, length=1024 * 1024)
+        files.append((uploaded.name, str(input_path)))
+    return files
+
+
+def _apply_ocr_worker_result(state: dict, payload: dict):
+    if payload.get("output"):
+        state["outputs"].append(payload["output"])
+    if payload.get("output_path") and payload.get("out_name"):
+        output_path = Path(payload["output_path"])
+        if output_path.exists():
+            state["outputs"].append((payload["out_name"], str(output_path)))
+    if payload.get("error"):
+        state["errors"].append(payload["error"])
+    if payload.get("log"):
+        level, fname, msg = payload["log"]
+        _log(state, level, fname, msg)
+
+
+def _run_chrome_file_parallel_subprocess(
+    state: dict,
+    files_data: list[tuple[str, str]],
+    out_names: list[str],
+    ocr_kwargs: dict,
+    backend: str,
+    save_to_disk: bool,
+    output_dir: str,
+    file_concurrency: int,
+) -> int:
+    """Run Chrome file-level parallelism with explicit subprocess workers."""
+    total = len(files_data)
+    completed = 0
+    next_index = 0
+    running: list[dict] = []
+    worker_tmpdirs: list[tempfile.TemporaryDirectory] = []
+
+    def _launch(index: int):
+        fname, source_path = files_data[index]
+        out_name = out_names[index]
+        tmpdir = tempfile.TemporaryDirectory(prefix="ocrmypdf-aih-chrome-worker-")
+        worker_tmpdirs.append(tmpdir)
+        tmp_path = Path(tmpdir.name)
+        stem = Path(fname).stem[:40]
+        output_path = tmp_path / "output.pdf"
+        job = {
+            "input_path": source_path,
+            "output_path": str(output_path),
+            "fname": fname,
+            "out_name": out_name,
+            "ocr_kwargs": ocr_kwargs,
+            "backend": backend,
+        }
+        token = base64.b64encode(json.dumps(job, ensure_ascii=False).encode("utf-8")).decode("ascii")
+        env = os.environ.copy()
+        src_dir = str(Path(__file__).parents[1])
+        existing_pythonpath = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = (
+            src_dir if not existing_pythonpath else f"{src_dir}{os.pathsep}{existing_pythonpath}"
+        )
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "ocrmypdf.aih_webui_worker_cli", token],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            env=env,
+            cwd=str(Path(__file__).parents[1]),
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        running.append({
+            "index": index,
+            "fname": fname,
+            "out_name": out_name,
+            "output_path": output_path,
+            "proc": proc,
+        })
+        state["progress_text"] = f"Chrome ScreenAI 已启动 {index + 1}/{total}：{fname}"
+
+    try:
+        while next_index < total and len(running) < file_concurrency:
+            _launch(next_index)
+            next_index += 1
+
+        while running:
+            if state["stop"]:
+                for item in running:
+                    item["proc"].terminate()
+                break
+
+            for item in list(running):
+                proc = item["proc"]
+                if proc.poll() is None:
+                    continue
+
+                stdout, stderr = proc.communicate()
+                payload = None
+                for line in reversed(stdout.splitlines()):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                        break
+                    except json.JSONDecodeError:
+                        continue
+
+                if payload is None:
+                    fname = item["fname"]
+                    err = stderr.strip() or stdout.strip() or f"worker exited with {proc.returncode}"
+                    payload = {
+                        "fname": fname,
+                        "out_name": item["out_name"],
+                        "output_path": None,
+                        "error": (fname, err),
+                        "log": ("error", fname, f"{fname}：Chrome worker failed: {err}"),
+                    }
+
+                if payload.get("output_path") and save_to_disk and output_dir:
+                    src_output = Path(payload["output_path"])
+                    if src_output.exists():
+                        dst_output = Path(output_dir) / item["out_name"]
+                        with file_job_lock(str(dst_output), label=item["out_name"]):
+                            shutil.copy2(src_output, dst_output)
+                        payload["output_path"] = str(dst_output)
+                elif payload.get("output_path"):
+                    src_output = Path(payload["output_path"])
+                    retained_output = Path(state["task_dir"]) / "outputs" / item["out_name"]
+                    shutil.copy2(src_output, retained_output)
+                    payload["output_path"] = str(retained_output)
+
+                _apply_ocr_worker_result(state, payload)
+                running.remove(item)
+                completed += 1
+                state["progress"] = completed / total if total > 0 else 0
+                state["progress_text"] = f"Chrome ScreenAI 已完成 {completed}/{total}"
+
+                while next_index < total and len(running) < file_concurrency:
+                    _launch(next_index)
+                    next_index += 1
+                break
+            else:
+                time.sleep(0.2)
+    finally:
+        for tmpdir in worker_tmpdirs:
+            try:
+                tmpdir.cleanup()
+            except Exception:
+                pass
+
+    return completed
+
+
 def _ocr_one_file(
-    state: dict, file_data: bytes, fname: str, out_name: str,
+    state: dict, input_path: str, fname: str, out_name: str,
     ocr_kwargs: dict, backend: str,
     save_to_disk: bool, output_dir: str,
 ):
@@ -384,21 +573,13 @@ def _ocr_one_file(
     state["page_total"] = 0
     state["page_desc"] = ""
 
-    stem = Path(fname).stem
-    safe_suffix = f"_{stem[:40]}.pdf"
-    tmp_in_path = tmp_out_path = ""
+    tmp_out_path = ""
     try:
-        with tempfile.NamedTemporaryFile(
-            delete=False, suffix=safe_suffix
-        ) as tmp_in, tempfile.NamedTemporaryFile(
-            delete=False, suffix=".pdf"
-        ) as tmp_out:
-            tmp_in.write(file_data)
-            tmp_in.flush()
-            tmp_in_path, tmp_out_path = tmp_in.name, tmp_out.name
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_out:
+            tmp_out_path = tmp_out.name
 
         plugins = [str(Path(__file__).parent / "aih_progress_plugin.py")]
-        if backend == "Calamari（HTTP服务）":
+        if backend in ("Calamari（HTTP服务）", "PaddleOCR（本地全链路）", "Chrome ScreenAI（本地）"):
             plugin_path = Path(__file__).parent / "aih_calamari_plugin.py"
             print(f"[DEBUG] Plugin path: {plugin_path}")
             print(f"[DEBUG] Plugin exists: {plugin_path.exists()}")
@@ -406,12 +587,12 @@ def _ocr_one_file(
                 plugins.append(str(plugin_path))
                 print(f"[DEBUG] Plugins to load: {plugins}")
             else:
-                raise FileNotFoundError(f"Calamari 插件未找到：{plugin_path}")
+                raise FileNotFoundError(f"AIH OCR 插件未找到：{plugin_path}")
 
         # 覆盖 progress_bar 为 True，让进度插件生效
         kw = {**ocr_kwargs, "progress_bar": True}
         result = ocrmypdf.ocr(
-            tmp_in_path, tmp_out_path,
+            input_path, tmp_out_path,
             plugins=plugins,
             **kw,
         )
@@ -420,22 +601,39 @@ def _ocr_one_file(
         elapsed_str = f"{elapsed:.1f}秒"
 
         if result == ocrmypdf.ExitCode.ok:
-            out_data = Path(tmp_out_path).read_bytes()
-            state["outputs"].append((out_name, out_data))
+            saved_path = None
             if save_to_disk and output_dir:
-                (Path(output_dir) / out_name).write_bytes(out_data)
-            _log(state, "success", fname, f"{fname} -> {out_name} (耗时: {elapsed_str})")
+                saved_path = Path(output_dir) / out_name
+                with file_job_lock(str(saved_path), label=out_name):
+                    shutil.copy2(tmp_out_path, saved_path)
+            else:
+                saved_path = Path(state["task_dir"]) / "outputs" / out_name
+                shutil.move(tmp_out_path, saved_path)
+                tmp_out_path = ""
+            state["outputs"].append((out_name, str(saved_path)))
+            if saved_path:
+                _log(state, "success", fname, f"{fname} -> {saved_path} (耗时: {elapsed_str})")
+            else:
+                _log(state, "success", fname, f"{fname} -> {out_name} (耗时: {elapsed_str})")
         elif result == ocrmypdf.ExitCode.pdfa_conversion_failed:
-            out_data = Path(tmp_out_path).read_bytes()
-            if len(out_data) > 0:
-                state["outputs"].append((out_name, out_data))
+            saved_path = None
+            if Path(tmp_out_path).stat().st_size > 0:
                 if save_to_disk and output_dir:
-                    (Path(output_dir) / out_name).write_bytes(out_data)
+                    saved_path = Path(output_dir) / out_name
+                    with file_job_lock(str(saved_path), label=out_name):
+                        shutil.copy2(tmp_out_path, saved_path)
+                else:
+                    saved_path = Path(state["task_dir"]) / "outputs" / out_name
+                    shutil.move(tmp_out_path, saved_path)
+                    tmp_out_path = ""
+                state["outputs"].append((out_name, str(saved_path)))
             selected_output_type = kw.get("output_type")
             if selected_output_type == "auto":
-                _log(state, "warning", fname, f"{fname}：未能生成 PDF/A，已自动回退为普通 PDF (耗时: {elapsed_str})")
+                suffix = f"，输出：{saved_path}" if saved_path else ""
+                _log(state, "warning", fname, f"{fname}：未能生成 PDF/A，已自动回退为普通 PDF{suffix} (耗时: {elapsed_str})")
             else:
-                _log(state, "warning", fname, f"{fname}：PDF/A 转换失败，输出可能不符合标准 (耗时: {elapsed_str})")
+                suffix = f"，输出：{saved_path}" if saved_path else ""
+                _log(state, "warning", fname, f"{fname}：PDF/A 转换失败，输出可能不符合标准{suffix} (耗时: {elapsed_str})")
         elif result == ocrmypdf.ExitCode.already_done_ocr:
             _log(state, "info", fname, f"{fname}：已包含文字层，跳过 (耗时: {elapsed_str})")
         elif result == ocrmypdf.ExitCode.encrypted_pdf:
@@ -450,7 +648,7 @@ def _ocr_one_file(
         state["errors"].append((fname, str(e)))
         _log(state, "error", fname, f"{fname}：{e} (耗时: {elapsed_str})")
     finally:
-        for p in (tmp_in_path, tmp_out_path):
+        for p in (tmp_out_path,):
             if p:
                 try:
                     os.unlink(p)
@@ -460,7 +658,7 @@ def _ocr_one_file(
 
 def _run_ocr_batch(
     state: dict,
-    files_data: list[tuple[str, bytes]],
+    files_data: list[tuple[str, str]],
     ocr_kwargs: dict, backend: str,
     output_suffix: str, save_to_disk: bool, output_dir: str,
     file_concurrency: int,
@@ -482,16 +680,36 @@ def _run_ocr_batch(
         return out
 
     def _process_one(item):
-        idx, (fname, data) = item
+        idx, (fname, input_path) = item
         if state["stop"]:
             return
         out_name = _make_out_name(fname)
         state["progress_text"] = f"正在处理 {idx + 1}/{total}：{fname}"
-        _ocr_one_file(state, data, fname, out_name, ocr_kwargs, backend, save_to_disk, output_dir)
+        _ocr_one_file(state, input_path, fname, out_name, ocr_kwargs, backend, save_to_disk, output_dir)
         state["progress"] = (idx + 1) / total if total > 0 else 0
 
     try:
-        if file_concurrency > 1:
+        chrome_file_parallel = (
+            backend == "Chrome ScreenAI（本地）"
+            and file_concurrency > 1
+            and int(ocr_kwargs.get("jobs", 1) or 1) <= 1
+        )
+        if chrome_file_parallel:
+            state["progress_text"] = (
+                f"Chrome ScreenAI 多本书外部进程并行：{file_concurrency} worker"
+            )
+            out_names = [_make_out_name(fname) for fname, _data in files_data]
+            _run_chrome_file_parallel_subprocess(
+                state,
+                files_data,
+                out_names,
+                ocr_kwargs,
+                backend,
+                save_to_disk,
+                output_dir,
+                file_concurrency,
+            )
+        elif file_concurrency > 1:
             with ThreadPoolExecutor(max_workers=file_concurrency) as pool:
                 futs = [pool.submit(_process_one, (i, fd)) for i, fd in enumerate(files_data)]
                 for f in as_completed(futs):
@@ -506,6 +724,9 @@ def _run_ocr_batch(
     except Exception as e:
         _log(state, "error", "", f"批量处理异常：{e}")
     finally:
+        task_dir = state.get("task_dir")
+        if task_dir:
+            shutil.rmtree(Path(task_dir) / "inputs", ignore_errors=True)
         state["running"] = False
         state["done"] = True
         state["progress"] = 1.0
@@ -524,7 +745,7 @@ st.sidebar.markdown(
 st.sidebar.header("OCR 引擎")
 backend = st.sidebar.radio(
     "选择后端",
-    ["Tesseract", "Calamari（HTTP服务）", "无（仅 PDF/A 转换）"],
+    ["Tesseract", "PaddleOCR（本地全链路）", "Calamari（HTTP服务）", "Chrome ScreenAI（本地）", "无（仅 PDF/A 转换）"],
     index=0,  # 默认选择 Tesseract
 )
 
@@ -536,6 +757,32 @@ calamari_retry = 2
 perf_strategy = "standard"
 preflight_chunk = 10
 preflight_dpi = 300
+preflight_workers = 1
+calamari_line_detector = "projection_debug"
+binarize_lines = True
+chrome_screenai_light = False
+chrome_screenai_filter_types = "printed"
+chrome_screenai_min_confidence = 0.0
+chrome_screenai_text_layer_mode = "native_direct"
+chrome_screenai_force_horizontal = True
+chrome_screenai_text_cleanup = "mode_default"
+chrome_screenai_rasterize_dpi = 300
+chrome_screenai_rasterize_quality = 88
+paddle_det_model = "PP-OCRv5_server_det"
+paddle_det_device = "gpu:0"
+paddle_det_min_confidence = 0.0
+_discovered_paddle_env = discover_paddle_env() if discover_paddle_env else None
+paddle_det_python = str(_discovered_paddle_env.python) if _discovered_paddle_env else ""
+paddle_det_source_dir = str(_discovered_paddle_env.source_dir) if _discovered_paddle_env else ""
+paddle_ocr_version = "PP-OCRv6"
+paddle_ocr_lang = "en"
+paddle_ocr_device = "gpu:0"
+paddle_ocr_rec_batch_size = 16
+paddle_ocr_min_confidence = 0.0
+paddle_ocr_python = paddle_det_python
+paddle_ocr_source_dir = paddle_det_source_dir
+paddle_ocr_enable_mkldnn = False
+paddle_ocr_cpu_threads = 0
 if backend == "Calamari（HTTP服务）":
     calamari_url = st.sidebar.text_input(
         "Calamari API 地址", value="http://localhost:11800"
@@ -573,17 +820,83 @@ if backend == "Calamari（HTTP服务）":
         "性能策略",
         list(PERF_STRATEGIES.keys()),
         format_func=lambda x: PERF_STRATEGIES[x],
-        index=1,  # 默认选择 preflight
-        help="快速：客户端切行+批量发送；预飞：预渲染所有页面跨页合并推理",
+        index=1,  # 默认选择 preflight，优先整体批量吞吐
+        help="快速：按页进入识别流程；预飞：先分批预渲染并缓存，整体吞吐通常更高",
     )
+    if perf_strategy == "preflight":
+        st.sidebar.warning("预飞会先分批渲染/切行并写缓存，大文件会更久才看到 OCR 结果。")
 
     # -- Calamari 高级选项 --
     with st.sidebar.expander("Calamari 高级选项"):
-        use_tesseract_seg = st.checkbox(
-            "使用 Tesseract 行分割",
-            value=True,  # 默认启用
-            help="使用 Tesseract 进行行分割，比投影法更准确，解决行合并问题"
+        LINE_DETECTOR_LABELS = {
+            "paddle_det": "PaddleOCR — 稳定文本检测",
+            "chrome_screenai": "Chrome ScreenAI — 本地版面/行检测",
+            "tesseract": "Tesseract — 传统行分割",
+            "projection_debug": "投影法 — 兼容旧流程",
+        }
+        calamari_line_detector = st.selectbox(
+            "行检测器",
+            ["paddle_det", "chrome_screenai", "tesseract", "projection_debug"],
+            format_func=lambda x: LINE_DETECTOR_LABELS[x],
+            index=0,
+            help="选择 Calamari 识别前的切行来源",
         )
+        if calamari_line_detector == "paddle_det":
+            if _discovered_paddle_env:
+                st.caption(f"Paddle 环境：{_discovered_paddle_env.source} · {_discovered_paddle_env.python}")
+            else:
+                st.caption("Paddle 环境：未自动发现，可手动填写 Python 与源码目录")
+            paddle_det_model = st.text_input(
+                "Paddle 检测模型",
+                value="PP-OCRv5_server_det",
+                help="默认使用 PaddleOCR 3.x 文本检测模型",
+            )
+            paddle_det_device = st.selectbox(
+                "Paddle 推理设备",
+                ["gpu:0", "cpu"],
+                index=0,
+            )
+            paddle_det_min_confidence = st.number_input(
+                "Paddle 最低置信度",
+                value=0.0,
+                min_value=0.0,
+                max_value=1.0,
+                step=0.05,
+            )
+            paddle_det_python = st.text_input(
+                "Paddle Python",
+                value=paddle_det_python,
+            )
+            paddle_det_source_dir = st.text_input(
+                "Paddle 源码目录",
+                value=paddle_det_source_dir,
+            )
+        if calamari_line_detector == "chrome_screenai":
+            chrome_screenai_light = st.checkbox(
+                "Chrome ScreenAI 轻量模式",
+                value=False,
+                help="启用轻量模型路径；可用性取决于本地 locro/ScreenAI 环境",
+            )
+            chrome_screenai_filter_types = st.selectbox(
+                "Chrome 内容过滤",
+                ["printed", "all"],
+                format_func=lambda x: {
+                    "printed": "仅印刷文本",
+                    "all": "全部文本类型",
+                }[x],
+            )
+            chrome_screenai_min_confidence = st.number_input(
+                "Chrome 最低置信度",
+                value=0.0,
+                min_value=0.0,
+                max_value=1.0,
+                step=0.05,
+            )
+            chrome_screenai_force_horizontal = st.checkbox(
+                "强制横排坐标匹配",
+                value=True,
+                help="忽略 Chrome 返回的竖排方向，按从上到下、同一行从左到右匹配坐标。",
+            )
         binarize_lines = st.checkbox(
             "对行图像进行二值化",
             value=True,  # 默认启用
@@ -609,15 +922,15 @@ if backend == "Calamari（HTTP服务）":
             default_workers = 10  # 默认10个线程
 
             preflight_chunk = st.slider(
-                "预飞每批页数", 5, 200, 100,  # 默认100
-                help="每批合并多少页的行图片发送到 GPU（默认 100，建议根据内存调整）",
+                "预飞每批页数", 5, 200, 100,
+                help="每批合并多少页的行图片发送到识别服务（默认 100，建议根据内存调整）",
             )
             preflight_dpi = st.selectbox(
                 "预飞渲染 DPI", [150, 200, 300, 400], index=2,
                 help="越高越清晰但越慢，300 适合大多数场景",
             )
             preflight_workers = st.slider(
-                "渲染并行线程数", 1, 10, default_workers,  # 范围改为1-10，默认10
+                "渲染并行线程数", 1, 10, default_workers,
                 help=f"并行渲染页面的线程数（默认 {default_workers}）",
             )
         else:
@@ -640,6 +953,127 @@ if backend == "Calamari（HTTP服务）":
                     st.text(f"已缓存模型：{', '.join(cached) if cached else '无'}")
                 except Exception as e:
                     st.error(f"连接失败：{e}")
+elif backend == "PaddleOCR（本地全链路）":
+    with st.sidebar.expander("PaddleOCR 选项", expanded=True):
+        if _discovered_paddle_env:
+            st.caption(f"Paddle 环境：{_discovered_paddle_env.source} · {_discovered_paddle_env.python}")
+        else:
+            st.caption("Paddle 环境：未自动发现，可手动填写 Python 与源码目录")
+        paddle_ocr_version = st.selectbox(
+            "PaddleOCR 基线",
+            ["PP-OCRv6", "PP-OCRv5", "auto"],
+            index=0,
+            help="PP-OCRv6 是 PaddleOCR 3.7 的新基线；auto 由当前 PaddleOCR 环境决定。",
+        )
+        paddle_ocr_lang = st.text_input(
+            "PaddleOCR 语言",
+            value="en",
+            help="例如 en、ch、japan；PP-OCRv6 覆盖多种拉丁语系。",
+        )
+        paddle_ocr_device = st.selectbox(
+            "PaddleOCR 推理设备",
+            ["gpu:0", "cpu", "auto"],
+            index=0,
+        )
+        paddle_ocr_rec_batch_size = st.slider(
+            "识别 batch size",
+            1,
+            64,
+            16,
+            help="单页内文本行识别批大小；GPU 可适当调高，CPU 建议保守。",
+        )
+        paddle_ocr_min_confidence = st.number_input(
+            "最低识别置信度",
+            value=0.0,
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+        )
+        paddle_ocr_python = st.text_input(
+            "Paddle Python",
+            value=paddle_ocr_python,
+        )
+        paddle_ocr_source_dir = st.text_input(
+            "Paddle 源码目录",
+            value=paddle_ocr_source_dir,
+        )
+        st.caption("高级性能选项")
+        paddle_ocr_enable_mkldnn = st.checkbox(
+            "CPU 启用 MKL-DNN",
+            value=False,
+            help="仅 CPU 模式下有意义；实际可用性取决于 Paddle 安装。",
+        )
+        paddle_ocr_cpu_threads = st.number_input(
+            "CPU 线程数（0=默认）",
+            value=0,
+            min_value=0,
+            max_value=max(1, os.cpu_count() or 1),
+        )
+elif backend == "Chrome ScreenAI（本地）":
+    with st.sidebar.expander("Chrome ScreenAI 选项", expanded=True):
+        chrome_screenai_text_layer_mode = st.selectbox(
+            "文本层模式",
+            ["native_direct", "proxy_match"],
+            format_func=lambda x: {
+                "native_direct": "完全直通 — Chrome 原生生成文本层",
+                "proxy_match": "代理匹配 — AIH 按坐标生成文本层",
+            }[x],
+            index=0,
+            help="完全直通最快、最接近 Chrome 原生；代理匹配可应用强制横排坐标逻辑。",
+        )
+        chrome_screenai_text_cleanup = st.selectbox(
+            "OCR 前文字层处理",
+            ["mode_default", "clear_all", "rasterize"],
+            format_func=lambda x: {
+                "mode_default": "按处理模式（默认，不自动栅格化）",
+                "clear_all": "轻量清除全部 PDF 文字对象",
+                "rasterize": "高性能栅格化清除（显式启用）",
+            }[x],
+            index=0,
+            help="轻量清除直接重写 PDF 内容流；栅格化仅在这里明确选择时启用。",
+        )
+        if chrome_screenai_text_cleanup == "rasterize":
+            chrome_screenai_rasterize_dpi = st.slider(
+                "栅格化 DPI",
+                150,
+                600,
+                300,
+                step=25,
+            )
+            chrome_screenai_rasterize_quality = st.slider(
+                "JPEG 质量",
+                60,
+                100,
+                88,
+            )
+        chrome_screenai_light = st.checkbox(
+            "轻量模式",
+            value=False,
+            help="启用轻量模型路径；可用性取决于本地 locro/ScreenAI 环境",
+        )
+        chrome_screenai_filter_types = st.selectbox(
+            "内容过滤",
+            ["printed", "all"],
+            format_func=lambda x: {
+                "printed": "仅印刷文本",
+                "all": "全部文本类型",
+            }[x],
+        )
+        chrome_screenai_min_confidence = st.number_input(
+            "最低置信度",
+            value=0.0,
+            min_value=0.0,
+            max_value=1.0,
+            step=0.05,
+        )
+        chrome_screenai_force_horizontal = st.checkbox(
+            "强制横排坐标匹配",
+            value=True,
+            disabled=chrome_screenai_text_layer_mode != "proxy_match",
+            help="忽略 Chrome 返回的竖排方向，按从上到下、同一行从左到右匹配坐标。",
+        )
+        if chrome_screenai_text_layer_mode == "native_direct":
+            st.caption("当前为完全直通模式：文本层由 Chrome ScreenAI 原生生成，不经过 AIH 坐标重排。")
 
 # -- Tesseract 引擎选择（在语言之前，因为引擎决定可用语言）--
 tess_oem = 1  # 默认值，非 Tesseract 后端时使用
@@ -706,6 +1140,14 @@ if backend == "Tesseract":
 elif backend == "Calamari（HTTP服务）":
     selected_langs = [calamari_model] if calamari_model else ["gt4histocr"]
     custom_lang = ""
+elif backend == "PaddleOCR（本地全链路）":
+    selected_langs = []
+    custom_lang = ""
+    st.sidebar.caption("PaddleOCR 全链路使用 PaddleOCR 自身语言配置，不依赖 Tesseract 语言包。")
+elif backend == "Chrome ScreenAI（本地）":
+    selected_langs = []
+    custom_lang = ""
+    st.sidebar.caption("Chrome ScreenAI 使用本地版面分析与识别模型，不依赖 Tesseract 语言包。")
 else:
     selected_langs = []
     custom_lang = ""
@@ -784,23 +1226,80 @@ with st.sidebar.expander("输出设置"):
 # -- 性能设置 --
 with st.sidebar.expander("性能设置"):
     cpu_count = os.cpu_count() or 4
-    if backend == "Calamari（HTTP服务）":
-        default_jobs = 1
-        jobs_help = "Calamari GPU 后端建议 jobs=1，避免多进程争抢 GPU 资源"
-    else:
-        default_jobs = max(1, cpu_count // 2)
-        jobs_help = f"默认为 CPU 线程数的一半（{default_jobs}/{cpu_count}），留余量给系统"
-    jobs = st.slider("页面并行数（每文件）", 1, cpu_count, default_jobs, help=jobs_help)
-    use_threads = st.checkbox("使用线程（而非进程）", value=False,
-                              help="线程模式性能较低但便于调试")
-    # 文件级并发（仅 Tesseract）
-    if backend == "Tesseract":
-        file_concurrency = st.slider(
-            "文件并发数", 1, max(1, cpu_count // 2), 1,
-            help="同时处理多个文件。注意：文件并发数 × 页面并行数 = 总进程数，避免超过 CPU 核心数",
+    if backend == "Chrome ScreenAI（本地）":
+        current_mode = st.session_state.get("chrome_concurrency_mode", "page_parallel")
+        if current_mode not in ("native_direct", "page_parallel", "file_parallel"):
+            current_mode = "page_parallel"
+        chrome_concurrency_mode = st.radio(
+            "Chrome 并发模式",
+            ["native_direct", "page_parallel", "file_parallel"],
+            index=["native_direct", "page_parallel", "file_parallel"].index(current_mode),
+            format_func=lambda x: {
+                "native_direct": "原生直通（不拆分）",
+                "page_parallel": "单本书页内并行",
+                "file_parallel": "多本书整本并行",
+            }[x],
+            help="三种模式互斥：原生直通最稳且后处理最少；页段并行适合单本大书；文件并行适合多本书批处理。",
+            key="chrome_concurrency_mode",
         )
+        use_threads = True
+        if chrome_concurrency_mode == "native_direct":
+            jobs = 1
+            file_concurrency = 1
+            st.caption(
+                "当前策略：Chrome/locro 原生单文档直通。不拆页段、不做最终 chunk 合并，"
+                "优先使用最少中间层和最稳定路径。"
+            )
+        elif chrome_concurrency_mode == "page_parallel":
+            st.caption(
+                "将单本书拆成多个页段，由外部独立子进程并行处理，再按页序合并。"
+                "适合单本大书，不再使用同进程线程直接调用 Chrome DLL。"
+            )
+            jobs = st.slider(
+                "单书并行页段数",
+                1,
+                16,
+                8,
+                help="把一本书切成多个页段，交给多个独立子进程并行 OCR。默认 8，最高 16。",
+                key="chrome_page_workers",
+            )
+            file_concurrency = 1
+            st.caption(f"当前策略：单本书页段并行。文件并发=1，页段 worker={jobs}。")
+        else:
+            file_concurrency = st.slider(
+                "并行书本数",
+                1,
+                max(1, cpu_count // 2),
+                min(3, max(1, cpu_count // 2)),
+                help="同时处理多本书；Chrome 会使用进程隔离，每本书内部固定为单线程顺序处理页面。",
+                key="chrome_file_concurrency",
+            )
+            jobs = 1
+            st.caption(f"当前策略：多本书整本并行。进程并发={file_concurrency}，每本书内部顺序处理。")
     else:
-        file_concurrency = 1
+        if backend == "Calamari（HTTP服务）":
+            default_jobs = 1
+            jobs_help = "Calamari GPU 后端建议 jobs=1，避免多进程争抢 GPU 资源"
+        elif backend == "PaddleOCR（本地全链路）":
+            default_jobs = 1 if paddle_ocr_device.startswith("gpu") else max(1, cpu_count // 2)
+            jobs_help = "PaddleOCR GPU 后端建议先用 jobs=1；CPU 可用多进程按页并行"
+        else:
+            default_jobs = max(1, cpu_count // 2)
+            jobs_help = f"默认为 CPU 线程数的一半（{default_jobs}/{cpu_count}），留余量给系统"
+        jobs = st.slider("页面并行数（每文件）", 1, cpu_count, default_jobs, help=jobs_help)
+        use_threads = st.checkbox(
+            "使用线程（而非进程）",
+            value=False,
+            help="线程模式适合轻量或共享内存场景；大多数 CPU OCR 后端默认仍建议进程模式。",
+        )
+        # 文件级并发（仅 Tesseract）
+        if backend == "Tesseract":
+            file_concurrency = st.slider(
+                "文件并发数", 1, max(1, cpu_count // 2), 1,
+                help="同时处理多个文件。注意：文件并发数 × 页面并行数 = 总进程数，避免超过 CPU 核心数",
+            )
+        else:
+            file_concurrency = 1
 
 # -- 输出存储 --
 _user_cfg = _load_config()
@@ -833,7 +1332,7 @@ with _title_col:
     st.markdown(
         '<h1 style="color:#E8751A;margin-bottom:0">OCRmyPDF-AIH Infra \u7279\u5316\u7248</h1>'
         '<p style="color:#999;margin-top:0">\u7279\u5316 by <b>Baireinhold</b> &mdash; '
-        '\u6279\u91cf PDF \u6587\u5b57\u8bc6\u522b\uff0c\u652f\u6301 Tesseract / Calamari \u540e\u7aef</p>',
+        '\u6279\u91cf PDF \u6587\u5b57\u8bc6\u522b\uff0c\u652f\u6301 Tesseract / PaddleOCR / Calamari / Chrome ScreenAI \u540e\u7aef</p>',
         unsafe_allow_html=True,
     )
 st.markdown("<hr style='margin:0.5rem 0'>", unsafe_allow_html=True)
@@ -843,7 +1342,7 @@ uploaded_files = st.file_uploader(
     "上传 PDF 文件（支持多选）",
     type=["pdf"],
     accept_multiple_files=True,
-    key="files",
+    key=f"files_{_ocr_state.get('upload_generation', 0)}",
 )
 
 if uploaded_files:
@@ -935,13 +1434,27 @@ if uploaded_files:
             seg_mode = "client"  # 总是使用客户端分割
             is_preflight = perf_strategy == "preflight"
             print(f"[DEBUG] perf_strategy={perf_strategy}, is_preflight={is_preflight}", flush=True)
+            print(f"[UI-DEBUG] calamari_line_detector={calamari_line_detector}", flush=True)
             ocr_kwargs["calamari_url"] = calamari_url or "http://localhost:11800"
             ocr_kwargs["calamari_model"] = calamari_model or "gt4histocr"
             ocr_kwargs["calamari_timeout"] = calamari_timeout
             ocr_kwargs["calamari_batch_mode"] = calamari_batch_mode
             ocr_kwargs["calamari_segmentation"] = seg_mode
-            if use_tesseract_seg:
+            ocr_kwargs["calamari_line_detector"] = calamari_line_detector
+            if calamari_line_detector == "tesseract":
                 ocr_kwargs["calamari_use_tesseract_segmentation"] = True
+            if calamari_line_detector == "paddle_det":
+                ocr_kwargs["calamari_paddle_model"] = paddle_det_model
+                ocr_kwargs["calamari_paddle_device"] = paddle_det_device
+                ocr_kwargs["calamari_paddle_min_confidence"] = paddle_det_min_confidence
+                ocr_kwargs["calamari_paddle_python"] = paddle_det_python
+                ocr_kwargs["calamari_paddle_source_dir"] = paddle_det_source_dir
+            if calamari_line_detector == "chrome_screenai":
+                ocr_kwargs["chrome_screenai_light"] = chrome_screenai_light
+                ocr_kwargs["chrome_screenai_filter_types"] = chrome_screenai_filter_types
+                ocr_kwargs["chrome_screenai_min_confidence"] = chrome_screenai_min_confidence
+                ocr_kwargs["chrome_screenai_force_horizontal"] = chrome_screenai_force_horizontal
+                ocr_kwargs["_ocr_worker_strategy"] = "serial"
             if binarize_lines:
                 ocr_kwargs["calamari_binarize_lines"] = True
             if deskew:
@@ -956,6 +1469,30 @@ if uploaded_files:
                 ocr_kwargs["calamari_preflight_workers"] = preflight_workers
             # Calamari使用自己的deskew实现，移除OCRmyPDF内置的deskew参数
             ocr_kwargs.pop("deskew", None)
+        elif backend == "PaddleOCR（本地全链路）":
+            ocr_kwargs["ocr_engine"] = "paddle_ocr"
+            ocr_kwargs["paddle_ocr_version"] = paddle_ocr_version
+            ocr_kwargs["paddle_ocr_lang"] = paddle_ocr_lang
+            ocr_kwargs["paddle_ocr_device"] = paddle_ocr_device
+            ocr_kwargs["paddle_ocr_rec_batch_size"] = paddle_ocr_rec_batch_size
+            ocr_kwargs["paddle_ocr_min_confidence"] = paddle_ocr_min_confidence
+            ocr_kwargs["paddle_ocr_python"] = paddle_ocr_python
+            ocr_kwargs["paddle_ocr_source_dir"] = paddle_ocr_source_dir
+            ocr_kwargs["paddle_ocr_enable_mkldnn"] = bool(paddle_ocr_enable_mkldnn)
+            if paddle_ocr_cpu_threads:
+                ocr_kwargs["paddle_ocr_cpu_threads"] = int(paddle_ocr_cpu_threads)
+        elif backend == "Chrome ScreenAI（本地）":
+            ocr_kwargs["ocr_engine"] = "chrome_screenai"
+            ocr_kwargs["chrome_screenai_light"] = chrome_screenai_light
+            ocr_kwargs["chrome_screenai_filter_types"] = chrome_screenai_filter_types
+            ocr_kwargs["chrome_screenai_min_confidence"] = chrome_screenai_min_confidence
+            ocr_kwargs["chrome_screenai_text_layer_mode"] = chrome_screenai_text_layer_mode
+            ocr_kwargs["chrome_screenai_force_horizontal"] = chrome_screenai_force_horizontal
+            ocr_kwargs["chrome_screenai_text_cleanup"] = chrome_screenai_text_cleanup
+            ocr_kwargs["chrome_screenai_rasterize_dpi"] = chrome_screenai_rasterize_dpi
+            ocr_kwargs["chrome_screenai_rasterize_quality"] = chrome_screenai_rasterize_quality
+            ocr_kwargs["_chrome_screenai_native_pdf"] = chrome_screenai_text_layer_mode == "native_direct"
+            ocr_kwargs["_ocr_worker_strategy"] = "serial"
         elif backend == "无（仅 PDF/A 转换）":
             ocr_kwargs["ocr_engine"] = "none"
             ocr_kwargs["pdf_renderer"] = "auto"
@@ -970,8 +1507,11 @@ if uploaded_files:
         else:
             print(f"[UI-DEBUG] calamari_deskew NOT in final kwargs", flush=True)
 
-        # 快照文件数据（防止 rerun 后 uploaded_files 丢失）
-        files_data = [(f.name, f.getvalue()) for f in uploaded_files]
+        # 上传内容顺序落盘；后台任务只传路径，避免整批 PDF 常驻内存。
+        task_dir = _create_task_dir(_ocr_state)
+        files_data = _spool_uploads_to_disk(uploaded_files, task_dir)
+        # 下一次 rerun 使用新的 uploader，释放 Streamlit 持有的 UploadedFile 缓冲。
+        _ocr_state["upload_generation"] = _ocr_state.get("upload_generation", 0) + 1
 
         # 重置状态
         _ocr_state["running"] = True
@@ -1041,25 +1581,28 @@ if _ocr_state["running"] or _ocr_state["done"]:
         output_files = _ocr_state["outputs"]
         if output_files:
             st.divider()
-            if len(output_files) == 1:
-                name, data = output_files[0]
-                st.download_button(
-                    f"下载 {name}", data=data,
-                    file_name=name, mime="application/pdf",
-                )
-            else:
-                zip_buf = io.BytesIO()
-                with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for name, data in output_files:
-                        zf.writestr(name, data)
-                st.download_button(
-                    f"下载全部（{len(output_files)} 个文件，ZIP）",
-                    data=zip_buf.getvalue(),
-                    file_name="ocrmypdf_output.zip",
-                    mime="application/zip",
-                )
             if _ocr_state["output_dir"]:
                 st.info(f"文件已同步保存到：{_ocr_state['output_dir']}")
+            elif len(output_files) == 1:
+                name, output_path = output_files[0]
+                with Path(output_path).open("rb") as data:
+                    st.download_button(
+                        f"下载 {name}", data=data,
+                        file_name=name, mime="application/pdf",
+                    )
+            else:
+                zip_path = Path(_ocr_state["task_dir"]) / "ocrmypdf_output.zip"
+                if not zip_path.exists():
+                    with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for name, output_path in output_files:
+                            zf.write(output_path, arcname=name)
+                with zip_path.open("rb") as data:
+                    st.download_button(
+                        f"下载全部（{len(output_files)} 个文件，ZIP）",
+                        data=data,
+                        file_name="ocrmypdf_output.zip",
+                        mime="application/zip",
+                    )
 
         # 错误汇总
         if _ocr_state["errors"]:
@@ -1069,6 +1612,7 @@ if _ocr_state["running"] or _ocr_state["done"]:
 
         # 清除按钮
         if st.button("清除结果"):
+            _cleanup_task_dir(_ocr_state)
             _ocr_state["done"] = False
             _ocr_state["logs"] = []
             _ocr_state["outputs"] = []
@@ -1083,7 +1627,8 @@ st.markdown(
     'Powered by '
     '<a href="https://github.com/ocrmypdf/OCRmyPDF">OCRmyPDF</a> · '
     '<a href="https://github.com/tesseract-ocr/tesseract">Tesseract OCR</a> · '
-    '<a href="https://github.com/Calamari-OCR/calamari">Calamari OCR</a>'
+    '<a href="https://github.com/Calamari-OCR/calamari">Calamari OCR</a> · '
+    '<a href="https://github.com/chromium/chromium">Chrome ScreenAI</a>'
     '<br>AIH-Infra 特化版 by Baireinhold'
     '</div>',
     unsafe_allow_html=True,

@@ -306,6 +306,10 @@ def add_options(parser):
 @hookimpl
 def check_options(options):
     """Check external dependencies and version compatibility for Tesseract."""
+    ocr_engine = getattr(options, 'ocr_engine', 'auto')
+    if ocr_engine not in ('auto', 'tesseract'):
+        return
+
     check_external_program(
         program='tesseract',
         package={'linux': 'tesseract-ocr'},

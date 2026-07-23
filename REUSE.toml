@@ -138,6 +138,13 @@ SPDX-FileCopyrightText = "(C) 2017 Max Anderson"
 SPDX-License-Identifier = "MIT"
 
 [[annotations]]
+path = "src/ocrmypdf/_vendor/locro/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "(C) 2026 Sergio Correia"
+SPDX-License-Identifier = "MIT"
+SPDX-FileComment = "Vendored from clv-locro for integrated Chrome ScreenAI support."
+
+[[annotations]]
 path = [
     "tests/resources/baiona**.png",
     "tests/resources/baiona**.jpg",

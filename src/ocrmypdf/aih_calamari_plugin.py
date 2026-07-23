@@ -22,6 +22,8 @@ Calamari API 规范 (v5.1):
 from __future__ import annotations
 
 # 在导入任何模块之前，先禁用警告和日志
+import base64
+import json
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -29,9 +31,12 @@ import html
 import logging
 import os
 import re
+import sys
 import tempfile
 import time
 from pathlib import Path
+
+from PIL import Image
 
 # 配置日志级别（必须在导入streamlit相关模块之前）
 logging.getLogger('streamlit').setLevel(logging.CRITICAL)
@@ -40,11 +45,18 @@ logging.getLogger('streamlit.runtime.scriptrunner_utils').setLevel(logging.CRITI
 logging.getLogger('streamlit.runtime.state').setLevel(logging.CRITICAL)
 logging.getLogger('streamlit.runtime.caching').setLevel(logging.CRITICAL)
 from subprocess import PIPE, run as subprocess_run
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, NamedTuple, Optional
 
 import requests
 from ocrmypdf import hookimpl
 from ocrmypdf.pluginspec import OcrEngine, OrientationConfidence
+from ocrmypdf.aih_chrome_screenai import ChromeScreenAIBackend
+from ocrmypdf.aih_line_detection import detect_lines_paddle_det
+from ocrmypdf.aih_paddle_ocr import (
+    PaddleOcrSettings,
+    run_paddle_ocr_page,
+    write_paddle_hocr,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Set
@@ -71,6 +83,38 @@ _config = {
     "preflight_chunk": 10,  # 每批处理的页数
     "preflight_dpi": 300,  # 预渲染 DPI
     "preflight_workers": 1,  # 渲染并行度
+    "preflight_batch_lines": 512,  # 每个 Calamari multipart 子批最多行数
+    "preflight_batch_mb": 64,  # 每个 Calamari multipart 子批最多图像字节数
+    "line_detector": "paddle_det",  # paddle_det | chrome_screenai | tesseract | projection_debug
+    "chrome_screenai_light": False,
+    "chrome_screenai_min_confidence": 0.0,
+    "chrome_screenai_filter_types": "printed",
+    "chrome_screenai_text_layer_mode": "native_direct",
+    "chrome_screenai_force_horizontal": True,
+    "chrome_screenai_text_cleanup": "mode_default",
+    "chrome_screenai_rasterize_dpi": 300,
+    "chrome_screenai_rasterize_quality": 88,
+    "paddle_det_model": "PP-OCRv5_server_det",
+    "paddle_det_device": "gpu:0",
+    "paddle_det_min_confidence": 0.0,
+    "paddle_det_python": "",
+    "paddle_det_source_dir": "",
+    "paddle_ocr_version": "PP-OCRv6",
+    "paddle_ocr_lang": "en",
+    "paddle_ocr_det_model": "",
+    "paddle_ocr_rec_model": "",
+    "paddle_ocr_det_model_dir": "",
+    "paddle_ocr_rec_model_dir": "",
+    "paddle_ocr_device": "gpu:0",
+    "paddle_ocr_engine": "",
+    "paddle_ocr_enable_mkldnn": False,
+    "paddle_ocr_cpu_threads": None,
+    "paddle_ocr_enable_hpi": None,
+    "paddle_ocr_rec_batch_size": 16,
+    "paddle_ocr_min_confidence": 0.0,
+    "paddle_ocr_return_word_box": False,
+    "paddle_ocr_python": "",
+    "paddle_ocr_source_dir": "",
 }
 
 # ---------------------------------------------------------------------------
@@ -108,6 +152,44 @@ def _preflight_cache_write_hocr(pageno: int, hocr_content: str, dpi: int):
     dpi_path.write_text(str(dpi), encoding="utf-8")
 
 
+def _preflight_cache_write_lineboxes(pageno: int, line_boxes, dpi: int, detector: str):
+    """写入外部行检测器行框缓存到磁盘，同时记录源 DPI。"""
+    cache_dir = os.environ.get("CALAMARI_PREFLIGHT_CACHE")
+    if not cache_dir:
+        return
+
+    cache_path = Path(cache_dir)
+    boxes_path = cache_path / f"page_{pageno:06d}.{detector}_lineboxes.json"
+
+    payload = {
+        "dpi": int(dpi),
+        "lines": [
+            {
+                "bbox": [int(v) for v in line_box.bbox],
+                "text": str(getattr(line_box, "text", "") or ""),
+                "words": [
+                    {
+                        "text": str(word_text or ""),
+                        "bbox": [int(v) for v in word_bbox] if word_bbox else None,
+                    }
+                    for word_text, word_bbox in (getattr(line_box, "words", None) or [])
+                ],
+            }
+            for line_box in (line_boxes or [])
+            if getattr(line_box, "bbox", None)
+        ],
+        "bboxes": [
+            [int(v) for v in line_box.bbox]
+            for line_box in (line_boxes or [])
+            if getattr(line_box, "bbox", None)
+        ],
+    }
+    boxes_path.write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+
 def _preflight_cache_read_hocr(pageno: int) -> tuple[str, int] | None:
     """读取缓存的 hOCR 和 DPI."""
     cache_dir = os.environ.get("CALAMARI_PREFLIGHT_CACHE")
@@ -123,6 +205,61 @@ def _preflight_cache_read_hocr(pageno: int) -> tuple[str, int] | None:
         dpi = int(dpi_path.read_text(encoding="utf-8").strip())
         return (hocr, dpi)
     return None
+
+
+def _preflight_cache_read_lineboxes(
+    pageno: int,
+    detector: str,
+) -> tuple[list["_ChromeLineBox"], int] | None:
+    """读取外部行检测器行框缓存和源 DPI。"""
+    cache_dir = os.environ.get("CALAMARI_PREFLIGHT_CACHE")
+    if not cache_dir:
+        return None
+
+    cache_path = Path(cache_dir)
+    boxes_path = cache_path / f"page_{pageno:06d}.{detector}_lineboxes.json"
+    if not boxes_path.exists():
+        return None
+
+    payload = json.loads(boxes_path.read_text(encoding="utf-8"))
+    dpi = int(payload.get("dpi") or 300)
+    lines = payload.get("lines") or []
+    line_boxes = []
+    if isinstance(lines, list):
+        for item in lines:
+            if not isinstance(item, dict):
+                continue
+            bbox = item.get("bbox")
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            words = []
+            for word in item.get("words") or []:
+                if not isinstance(word, dict):
+                    continue
+                word_bbox = word.get("bbox")
+                words.append(
+                    (
+                        str(word.get("text") or ""),
+                        tuple(int(v) for v in word_bbox)
+                        if isinstance(word_bbox, (list, tuple)) and len(word_bbox) == 4
+                        else None,
+                    )
+                )
+            line_boxes.append(
+                _ChromeLineBox(
+                    tuple(int(v) for v in bbox),
+                    str(item.get("text") or ""),
+                    tuple(words),
+                )
+            )
+    if not line_boxes:
+        bboxes = payload.get("bboxes") or []
+        line_boxes = [
+            _ChromeLineBox(tuple(int(v) for v in bbox))
+            for bbox in bboxes
+            if isinstance(bbox, (list, tuple)) and len(bbox) == 4
+        ]
+    return (line_boxes, dpi)
 
 
 def _get_image_dpi(image_path: Path) -> int:
@@ -189,6 +326,176 @@ def _scale_hocr_dpi(hocr_content: str, source_dpi: int, target_dpi: int) -> str:
         elem['title'] = new_title
 
     return str(soup)
+
+
+def _scale_lineboxes_dpi(line_boxes, source_dpi: int, target_dpi: int):
+    """按 DPI 缩放缓存的 Chrome ScreenAI 行框."""
+    if source_dpi == target_dpi:
+        return list(line_boxes)
+
+    scale = target_dpi / source_dpi
+    scaled = []
+    for line_box in line_boxes:
+        x0, y0, x1, y1 = line_box.bbox
+        words = []
+        for word_text, word_bbox in (getattr(line_box, "words", None) or []):
+            if word_bbox:
+                wx0, wy0, wx1, wy1 = word_bbox
+                words.append(
+                    (
+                        word_text,
+                        (
+                            int(round(wx0 * scale)),
+                            int(round(wy0 * scale)),
+                            int(round(wx1 * scale)),
+                            int(round(wy1 * scale)),
+                        ),
+                    )
+                )
+            else:
+                words.append((word_text, None))
+        scaled.append(
+            _ChromeLineBox(
+                (
+                    int(round(x0 * scale)),
+                    int(round(y0 * scale)),
+                    int(round(x1 * scale)),
+                    int(round(y1 * scale)),
+                ),
+                getattr(line_box, "text", ""),
+                tuple(words),
+            )
+        )
+    return scaled
+
+
+def _scale_lineboxes_to_image(line_boxes, image_path: Path):
+    """Scale line boxes into the target OCR image pixel space when needed."""
+    with Image.open(image_path) as img:
+        width, height = img.size
+
+    valid_boxes = [
+        line_box.bbox
+        for line_box in (line_boxes or [])
+        if getattr(line_box, "bbox", None)
+    ]
+    if not valid_boxes or width <= 0 or height <= 0:
+        return list(line_boxes or [])
+
+    max_x = max(bbox[2] for bbox in valid_boxes)
+    max_y = max(bbox[3] for bbox in valid_boxes)
+    if max_x <= width * 1.10 and max_y <= height * 1.10:
+        return list(line_boxes)
+
+    sx = width / max_x if max_x else 1.0
+    sy = height / max_y if max_y else 1.0
+    scaled = []
+    for line_box in line_boxes:
+        x0, y0, x1, y1 = line_box.bbox
+        words = []
+        for word_text, word_bbox in (getattr(line_box, "words", None) or []):
+            if word_bbox:
+                wx0, wy0, wx1, wy1 = word_bbox
+                words.append(
+                    (
+                        word_text,
+                        (
+                            max(0, min(width, int(round(wx0 * sx)))),
+                            max(0, min(height, int(round(wy0 * sy)))),
+                            max(0, min(width, int(round(wx1 * sx)))),
+                            max(0, min(height, int(round(wy1 * sy)))),
+                        ),
+                    )
+                )
+            else:
+                words.append((word_text, None))
+        scaled.append(
+            _ChromeLineBox(
+                (
+                    max(0, min(width, int(round(x0 * sx)))),
+                    max(0, min(height, int(round(y0 * sy)))),
+                    max(0, min(width, int(round(x1 * sx)))),
+                    max(0, min(height, int(round(y1 * sy)))),
+                ),
+                getattr(line_box, "text", ""),
+                tuple(words),
+            )
+        )
+    return scaled
+
+
+def _split_line_text_to_word_spans(
+    line_text: str,
+    bbox: tuple[int, int, int, int],
+    *,
+    word_id_prefix: str,
+) -> str:
+    words = line_text.split()
+    if not words:
+        return ""
+
+    x0, y0, x1, y1 = bbox
+    width = max(1, x1 - x0)
+    total_chars = sum(len(word) for word in words) + max(0, len(words) - 1)
+    total_chars = total_chars or len(words)
+    char_offset = 0
+    spans = []
+    for word_index, word in enumerate(words):
+        wx0 = x0 + int(round(width * char_offset / total_chars))
+        char_offset += len(word)
+        wx1 = x0 + int(round(width * char_offset / total_chars))
+        if word_index == len(words) - 1:
+            wx1 = x1
+        if wx1 <= wx0:
+            wx1 = min(x1, wx0 + 1)
+        escaped = html.escape(word)
+        spans.append(
+            f"<span class='ocrx_word' id='{word_id_prefix}_{word_index:03d}' "
+            f"title='bbox {wx0} {y0} {wx1} {y1}'>{escaped}</span>"
+        )
+        char_offset += 1
+    return " ".join(spans)
+
+
+def _build_word_spans_from_explicit_words(
+    words: list[tuple[str, tuple[int, int, int, int] | None]],
+    *,
+    fallback_text: str,
+    line_bbox: tuple[int, int, int, int],
+    word_id_prefix: str,
+) -> str:
+    fallback_words = fallback_text.split()
+    explicit_bboxes = [word_bbox for _, word_bbox in words if word_bbox]
+    if not fallback_words or not explicit_bboxes:
+        return _split_line_text_to_word_spans(
+            fallback_text,
+            line_bbox,
+            word_id_prefix=word_id_prefix,
+        )
+
+    if len(explicit_bboxes) != len(fallback_words):
+        return _split_line_text_to_word_spans(
+            fallback_text,
+            line_bbox,
+            word_id_prefix=word_id_prefix,
+        )
+
+    spans = []
+    x0, y0, x1, y1 = line_bbox
+    for word_index, (word_text, word_bbox) in enumerate(zip(fallback_words, explicit_bboxes)):
+        wx0, wy0, wx1, wy1 = word_bbox
+        wx0 = max(x0, min(x1, int(wx0)))
+        wy0 = max(y0, min(y1, int(wy0)))
+        wx1 = max(x0, min(x1, int(wx1)))
+        wy1 = max(y0, min(y1, int(wy1)))
+        if wx1 <= wx0 or wy1 <= wy0:
+            continue
+        escaped = html.escape(word_text)
+        spans.append(
+            f"<span class='ocrx_word' id='{word_id_prefix}_{word_index:03d}' "
+            f"title='bbox {wx0} {wy0} {wx1} {wy1}'>{escaped}</span>"
+        )
+    return " ".join(spans)
 
 
 # ---------------------------------------------------------------------------
@@ -320,6 +627,17 @@ def _crop_line_images_by_bbox(image_path: Path, bboxes: list[tuple[int, int, int
     return line_images
 
 
+def _crop_line_images_by_lineboxes(image_path: Path, line_boxes, padding: int = 5, binarize: bool = False) -> list[bytes]:
+    """根据 LineBox 列表裁剪行图像。"""
+    bboxes = [line_box.bbox for line_box in line_boxes]
+    return _crop_line_images_by_bbox(
+        image_path,
+        bboxes,
+        padding=padding,
+        binarize=binarize,
+    )
+
+
 def _replace_hocr_line_texts(hocr_content: str, calamari_texts: list[str]) -> str:
     """替换 Tesseract hOCR 中的文本内容为 Calamari 识别结果，保留 bbox."""
     from bs4 import BeautifulSoup
@@ -378,6 +696,193 @@ def _replace_hocr_line_texts(hocr_content: str, calamari_texts: list[str]) -> st
                 line_span.string = calamari_texts[i]
 
     return str(soup)
+
+
+def _build_simple_hocr_from_lineboxes(
+    image_path: Path,
+    line_boxes,
+    texts: list[str],
+    *,
+    dpi_x: int,
+    dpi_y: int,
+) -> str:
+    """根据统一的 LineBox 列表和 OCR 文本构建最小 hOCR。"""
+    with Image.open(image_path) as img:
+        width, height = img.size
+
+    page_lines = []
+    for index, line_box in enumerate(line_boxes):
+        x0, y0, x1, y1 = line_box.bbox
+        x0 = max(0, min(width, int(x0)))
+        y0 = max(0, min(height, int(y0)))
+        x1 = max(0, min(width, int(x1)))
+        y1 = max(0, min(height, int(y1)))
+        if x1 <= x0 or y1 <= y0:
+            continue
+        line_text = texts[index] if index < len(texts) else ""
+        word_spans = _build_word_spans_from_explicit_words(
+            list(getattr(line_box, "words", ()) or ()),
+            fallback_text=line_text,
+            line_bbox=(x0, y0, x1, y1),
+            word_id_prefix=f"word_{index:06d}",
+        )
+        if not word_spans:
+            continue
+        page_lines.append(
+            f"      <span class='ocr_line' id='line_{index:06d}' "
+            f"title='bbox {x0} {y0} {x1} {y1}; scan_res {dpi_x} {dpi_y}'>"
+            f"{word_spans}"
+            f"</span>"
+        )
+
+    body = "\n".join(page_lines)
+    return (
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+        "<!DOCTYPE html PUBLIC \"-//W3C//DTD XHTML 1.0 Transitional//EN\"\n"
+        "    \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\n"
+        "<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\" lang=\"en\">\n"
+        "<head>\n"
+        "  <title>OCRmyPDF-AIH Calamari hOCR</title>\n"
+        "  <meta http-equiv='Content-Type' content='text/html;charset=utf-8'/>\n"
+        "  <meta name='ocr-system' content='OCRmyPDF-AIH Calamari'/>\n"
+        "</head>\n"
+        "<body>\n"
+        f"  <div class='ocr_page' id='page_1' title='bbox 0 0 {width} {height}; scan_res {dpi_x} {dpi_y}'>\n"
+        "    <p class='ocr_par' id='par_1'>\n"
+        f"{body}\n"
+        "    </p>\n"
+        "  </div>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+
+
+def _write_empty_hocr_page(image_path: Path, output_hocr: Path, output_text: Path, reason: str) -> None:
+    """Write a valid empty hOCR page for blank/no-text pages."""
+    with Image.open(image_path) as img:
+        dpi_info = img.info.get("dpi", (300, 300))
+        dpi_x = int(round(dpi_info[0])) if dpi_info[0] else 300
+        dpi_y = int(round(dpi_info[1])) if dpi_info[1] else 300
+    final_hocr = _build_simple_hocr_from_lineboxes(
+        image_path,
+        [],
+        [],
+        dpi_x=dpi_x,
+        dpi_y=dpi_y,
+    )
+    output_hocr.write_text(final_hocr, encoding="utf-8")
+    output_text.write_text("", encoding="utf-8")
+    print(f"[DIAG] Empty hOCR page written: {reason}", flush=True)
+
+
+class _ChromeLineBox(NamedTuple):
+    bbox: tuple[int, int, int, int]
+    text: str = ""
+    words: tuple[tuple[str, tuple[int, int, int, int] | None], ...] = ()
+
+
+def _detect_lines_with_chrome_screenai(
+    image_path: Path,
+    *,
+    page_number: int = 0,
+):
+    payload = {
+        "image_path": str(image_path),
+        "page_number": int(page_number),
+        "light_mode": bool(_config.get("chrome_screenai_light", False)),
+        "force_horizontal": bool(_config.get("chrome_screenai_force_horizontal", True)),
+        "filter_printed_text": _config.get("chrome_screenai_filter_types", "printed") != "all",
+        "min_confidence": float(_config.get("chrome_screenai_min_confidence", 0.0) or 0.0),
+    }
+    token = base64.b64encode(
+        json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    ).decode("ascii")
+    env = os.environ.copy()
+    src_dir = str(Path(__file__).parents[1])
+    existing_pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = (
+        src_dir if not existing_pythonpath else f"{src_dir}{os.pathsep}{existing_pythonpath}"
+    )
+    result = subprocess_run(
+        [sys.executable, "-m", "ocrmypdf.aih_chrome_line_worker", token],
+        capture_output=True,
+        check=False,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        env=env,
+        cwd=src_dir,
+    )
+    stdout = (result.stdout or "").strip()
+    stderr = (result.stderr or "").strip()
+    if result.returncode != 0:
+        raise RuntimeError(
+            stderr or stdout or f"Chrome ScreenAI line worker failed for {image_path.name}"
+        )
+
+    try:
+        payload_out = json.loads(stdout.splitlines()[-1] if stdout else "{}")
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            f"Chrome ScreenAI line worker returned invalid JSON for {image_path.name}: {stdout!r}"
+        ) from exc
+
+    if not payload_out.get("ok"):
+        raise RuntimeError(
+            payload_out.get("error") or f"Chrome ScreenAI line worker failed for {image_path.name}"
+        )
+
+    if isinstance(payload_out.get("lines"), list):
+        line_boxes = []
+        for item in payload_out.get("lines", []):
+            if not isinstance(item, dict):
+                continue
+            bbox = item.get("bbox")
+            if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+                continue
+            words = []
+            for word in item.get("words") or []:
+                if not isinstance(word, dict):
+                    continue
+                word_bbox = word.get("bbox")
+                words.append(
+                    (
+                        str(word.get("text") or ""),
+                        tuple(int(v) for v in word_bbox)
+                        if isinstance(word_bbox, (list, tuple)) and len(word_bbox) == 4
+                        else None,
+                    )
+                )
+            line_boxes.append(
+                _ChromeLineBox(
+                    tuple(int(v) for v in bbox),
+                    str(item.get("text") or ""),
+                    tuple(words),
+                )
+            )
+        return line_boxes
+
+    return [
+        _ChromeLineBox(tuple(int(v) for v in bbox))
+        for bbox in payload_out.get("bboxes", [])
+        if isinstance(bbox, (list, tuple)) and len(bbox) == 4
+    ]
+
+
+def _detect_lines_with_paddle_det(
+    image_path: Path,
+    *,
+    page_number: int = 0,
+):
+    return detect_lines_paddle_det(
+        image_path,
+        page_number=page_number,
+        model_name=str(_config.get("paddle_det_model", "PP-OCRv5_server_det") or "PP-OCRv5_server_det"),
+        device=str(_config.get("paddle_det_device", "gpu:0") or "gpu:0"),
+        min_confidence=float(_config.get("paddle_det_min_confidence", 0.0) or 0.0),
+        paddle_python=str(_config.get("paddle_det_python", "") or "") or None,
+        paddle_source_dir=str(_config.get("paddle_det_source_dir", "") or "") or None,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -871,15 +1376,27 @@ def _apply_deskew(image_path: Path, deskew_info: dict) -> Path:
 
 
 def _preflight_render_and_segment(
-    pdf_path: Path, page_numbers: list[int], dpi: int, tmpdir: Path, workers: int = 1, use_tesseract: bool = False, binarize: bool = True
+    pdf_path: Path,
+    page_numbers: list[int],
+    dpi: int,
+    tmpdir: Path,
+    workers: int = 1,
+    use_tesseract: bool = False,
+    binarize: bool = True,
+    line_detector: str = "projection_debug",
 ) -> dict[int, list[bytes]]:
     """渲染多页并分割行图片. 返回 {pageno: [line_png_bytes, ...]}."""
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    def _render_one_page(pageno: int) -> tuple[int, list[bytes], str | None]:
+    lineboxes_cache: dict[int, list[_ChromeLineBox]] = {}
+
+    def _render_one_page(
+        pageno: int,
+    ) -> tuple[int, list[bytes], str | None, list[_ChromeLineBox] | None]:
         """渲染单页并切行."""
         out_png = tmpdir / f"page_{pageno:06d}.png"
         hocr_content = None
+        detected_line_boxes = None
         try:
             _gs_render_page(pdf_path, pageno, out_png, dpi)
 
@@ -896,7 +1413,7 @@ def _preflight_render_and_segment(
                 print(f"[DESKEW] Page {pageno}: rotate={deskew_info['rotate']}°, "
                       f"deskew={deskew_info['deskew']:.2f}°, conf={deskew_info['confidence']:.2f}", flush=True)
 
-            # 使用Tesseract分割或投影法
+            # 使用 Tesseract / Chrome ScreenAI / 投影法 分割
             if use_tesseract and _check_tesseract_available():
                 try:
                     tesseract_hocr = _get_tesseract_hocr(out_png, "deu")
@@ -911,14 +1428,40 @@ def _preflight_render_and_segment(
                 except Exception as e:
                     print(f"[DIAG] Preflight page {pageno}: Tesseract error ({e}), using projection", flush=True)
                     lines = _segment_lines_client(out_png)
+            elif line_detector == "chrome_screenai":
+                line_boxes = _detect_lines_with_chrome_screenai(out_png)
+                detected_line_boxes = line_boxes
+                lines = _crop_line_images_by_lineboxes(
+                    out_png,
+                    line_boxes,
+                    binarize=binarize,
+                )
+                print(
+                    f"[DIAG] Preflight page {pageno}: Chrome ScreenAI detected {len(line_boxes)} lines, cropped {len(lines)}",
+                    flush=True,
+                )
+            elif line_detector == "paddle_det":
+                line_boxes = _detect_lines_with_paddle_det(out_png, page_number=pageno - 1)
+                detected_line_boxes = line_boxes
+                lines = _crop_line_images_by_lineboxes(
+                    out_png,
+                    line_boxes,
+                    binarize=binarize,
+                )
+                print(
+                    f"[DIAG] Preflight page {pageno}: PaddleOCR detected {len(line_boxes)} lines, cropped {len(lines)}",
+                    flush=True,
+                )
             else:
                 lines = _segment_lines_client(out_png)
 
             log.debug("Preflight page %d: %d lines", pageno, len(lines))
-            return (pageno, lines, hocr_content)
+            return (pageno, lines, hocr_content, detected_line_boxes)
         except Exception as e:
+            if line_detector in ("chrome_screenai", "paddle_det"):
+                raise
             log.warning("Preflight render failed for page %d: %s", pageno, e)
-            return (pageno, [], None)
+            return (pageno, [], None, None)
         finally:
             if out_png.exists():
                 out_png.unlink()
@@ -930,19 +1473,32 @@ def _preflight_render_and_segment(
         with ThreadPoolExecutor(max_workers=workers) as executor:
             futures = {executor.submit(_render_one_page, pn): pn for pn in page_numbers}
             for future in as_completed(futures):
-                pageno, lines, hocr = future.result()
+                pageno, lines, hocr, detected_line_boxes = future.result()
                 result[pageno] = lines
                 # 缓存 hOCR（如果有）
                 if hocr:
                     _preflight_cache_write_hocr(pageno - 1, hocr, dpi)  # GS 1-indexed → 0-indexed
+                if detected_line_boxes is not None:
+                    lineboxes_cache[pageno] = detected_line_boxes
     else:
         # 串行渲染
         for pageno in page_numbers:
-            _, lines, hocr = _render_one_page(pageno)
+            _, lines, hocr, detected_line_boxes = _render_one_page(pageno)
             result[pageno] = lines
             # 缓存 hOCR（如果有）
             if hocr:
                 _preflight_cache_write_hocr(pageno - 1, hocr, dpi)  # GS 1-indexed → 0-indexed
+            if detected_line_boxes is not None:
+                lineboxes_cache[pageno] = detected_line_boxes
+
+    if line_detector in ("chrome_screenai", "paddle_det"):
+        for pageno, detected_line_boxes in lineboxes_cache.items():
+            _preflight_cache_write_lineboxes(
+                pageno - 1,
+                detected_line_boxes,
+                dpi,
+                line_detector,
+            )
 
     return result
 
@@ -952,13 +1508,62 @@ def _preflight_ocr_chunk(
     pages_lines: dict[int, list[bytes]],
     model: str,
 ) -> dict[int, str]:
-    """对一个 chunk 的所有行图片做一次批量 OCR，返回 {pageno: text}.
+    """对一个 chunk 的行图片做有界批量 OCR，返回 {pageno: text}.
 
     文件名编码: image_PPPPPP_LLLLLL.png (P=页码, L=行号)
     这样可以从返回结果中还原页码和行号。
     """
-    all_files = []
+    batch_files = []
+    batch_bytes = 0
     page_line_counts: dict[int, int] = {}
+    page_texts: dict[int, dict[int, str]] = {}
+    batch_count = 0
+    total_elapsed = 0.0
+    max_batch_lines = max(1, int(_config.get("preflight_batch_lines", 512) or 512))
+    max_batch_bytes = max(1, int(_config.get("preflight_batch_mb", 64) or 64)) * 1024 * 1024
+
+    def flush_batch() -> bool:
+        nonlocal batch_files, batch_bytes, batch_count, total_elapsed
+        if not batch_files:
+            return True
+        batch_count += 1
+        current_files = batch_files
+        current_bytes = batch_bytes
+        batch_files = []
+        batch_bytes = 0
+
+        log.info(
+            "Preflight batch part %d: %d lines, %.1f MB",
+            batch_count,
+            len(current_files),
+            current_bytes / (1024 * 1024),
+        )
+        try:
+            resp = client._session.post(
+                f"{client.base_url}/ocr/batch",
+                files=current_files,
+                data={"model": model, "mode": "indexed"},
+                timeout=client.timeout,
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as e:
+            log.warning("Preflight batch part %d request failed: %s", batch_count, e)
+            return False
+
+        total_elapsed += float(payload.get("elapsed_seconds", 0) or 0)
+        for item in payload.get("results", []):
+            if not isinstance(item, dict):
+                continue
+            text = (item.get("text") or "").strip()
+            filename = item.get("filename", "")
+            m = re.search(r"image_(\d+)_(\d+)", filename)
+            if not m:
+                continue
+            pg = int(m.group(1))
+            ln = int(m.group(2))
+            page_texts.setdefault(pg, {})[ln] = text
+        return True
 
     for pageno in sorted(pages_lines.keys()):
         lines = pages_lines[pageno]
@@ -967,44 +1572,29 @@ def _preflight_ocr_chunk(
         page_line_counts[pageno] = len(lines)
         for line_idx, img_bytes in enumerate(lines):
             filename = f"image_{pageno:06d}_{line_idx:06d}.png"
-            all_files.append(("files", (filename, img_bytes, "image/png")))
+            if (
+                batch_files
+                and (
+                    len(batch_files) >= max_batch_lines
+                    or batch_bytes + len(img_bytes) > max_batch_bytes
+                )
+                and not flush_batch()
+            ):
+                return {}
+            batch_files.append(("files", (filename, img_bytes, "image/png")))
+            batch_bytes += len(img_bytes)
 
-    if not all_files:
+    if not batch_files and not page_line_counts:
         return {}
 
-    total_lines = len(all_files)
+    total_lines = sum(page_line_counts.values())
     log.info(
-        "Preflight batch: %d pages, %d lines total",
-        len(page_line_counts), total_lines,
+        "Preflight batch: %d pages, %d lines total, limit=%d lines/%.1f MB",
+        len(page_line_counts), total_lines, max_batch_lines, max_batch_bytes / (1024 * 1024),
     )
 
-    # 发送到 /ocr/batch
-    try:
-        resp = client._session.post(
-            f"{client.base_url}/ocr/batch",
-            files=all_files,
-            data={"model": model, "mode": "indexed"},
-            timeout=client.timeout,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-    except Exception as e:
-        log.warning("Preflight batch request failed: %s", e)
+    if not flush_batch():
         return {}
-
-    # 解析结果：从 filename 还原 pageno + line_idx
-    page_texts: dict[int, dict[int, str]] = {}
-    for item in payload.get("results", []):
-        if not isinstance(item, dict):
-            continue
-        text = (item.get("text") or "").strip()
-        filename = item.get("filename", "")
-        m = re.search(r"image_(\d+)_(\d+)", filename)
-        if not m:
-            continue
-        pg = int(m.group(1))
-        ln = int(m.group(2))
-        page_texts.setdefault(pg, {})[ln] = text
 
     # 按行号排序拼接（保留空行以保持索引对齐）
     result: dict[int, str] = {}
@@ -1013,10 +1603,9 @@ def _preflight_ocr_chunk(
         ordered = [lines_dict.get(i, "") for i in range(max(lines_dict.keys()) + 1)]
         result[pageno] = "\n".join(ordered)
 
-    elapsed = payload.get("elapsed_seconds", 0)
     log.info(
-        "Preflight batch done: %d lines in %.1fs (%.1f lines/s)",
-        total_lines, elapsed, total_lines / max(elapsed, 0.01),
+        "Preflight batch done: %d lines in %d part(s), %.1fs (%.1f lines/s)",
+        total_lines, batch_count, total_elapsed, total_lines / max(total_elapsed, 0.01),
     )
     return result
 
@@ -1045,13 +1634,15 @@ def _run_preflight(pdfinfo: "PdfInfo", options: "OcrOptions"):
     model = _config["model"]
     use_tesseract = _get_option(options, "calamari_use_tesseract_segmentation", False)
     binarize_lines = _get_option(options, "calamari_binarize_lines", True)
+    line_detector = str(_config.get("line_detector", "projection_debug"))
     client = _get_client()
 
     print(f"[DIAG] Preflight: use_tesseract_segmentation={use_tesseract}, binarize_lines={binarize_lines}", flush=True)
+    print(f"[DIAG] Preflight: line_detector={line_detector}", flush=True)
 
     log.info(
-        "Preflight OCR: %d pages, chunk=%d, dpi=%d, workers=%d, model=%s, tesseract=%s",
-        total_pages, chunk_size, dpi, workers, model, use_tesseract,
+        "Preflight OCR: %d pages, chunk=%d, dpi=%d, workers=%d, model=%s, tesseract=%s, line_detector=%s",
+        total_pages, chunk_size, dpi, workers, model, use_tesseract, line_detector,
     )
 
     all_page_numbers = list(range(1, total_pages + 1))  # GS 1-indexed
@@ -1066,14 +1657,38 @@ def _run_preflight(pdfinfo: "PdfInfo", options: "OcrOptions"):
             log.info("Preflight chunk: pages %d-%d", chunk_pages[0], chunk_pages[-1])
 
             pages_lines = _preflight_render_and_segment(
-                pdf_path, chunk_pages, dpi, render_path, workers, use_tesseract, binarize_lines
+                pdf_path,
+                chunk_pages,
+                dpi,
+                render_path,
+                workers,
+                use_tesseract,
+                binarize_lines,
+                line_detector,
             )
+            if line_detector in ("chrome_screenai", "paddle_det"):
+                missing_linebox_pages = [
+                    pageno for pageno in chunk_pages
+                    if not (
+                        _preflight_cache_dir
+                        / f"page_{pageno - 1:06d}.{line_detector}_lineboxes.json"
+                    ).exists()
+                ]
+                if missing_linebox_pages:
+                    raise RuntimeError(
+                        f"{line_detector} linebox cache missing for pages "
+                        f"{missing_linebox_pages[:10]}"
+                    )
             chunk_results = _preflight_ocr_chunk(client, pages_lines, model)
 
             # 写入磁盘缓存 (GS 1-indexed → 0-indexed)
             for gs_pageno, text in chunk_results.items():
                 _preflight_cache_write(gs_pageno - 1, text)
                 cached += 1
+            for gs_pageno in chunk_pages:
+                if gs_pageno not in chunk_results and not pages_lines.get(gs_pageno):
+                    _preflight_cache_write(gs_pageno - 1, "")
+                    cached += 1
 
     # 把缓存目录路径存到 _config，worker 进程通过 check_options 重建时不会丢失
     # 但 Windows spawn 模式下 _config 也会丢失，所以还需要通过 options 传递
@@ -1261,13 +1876,24 @@ class CalamariClient:
             log.warning("Calamari batch failed: %s, falling back to sequential", e)
             results = []
             for i, p in enumerate(image_paths):
-                text = self.ocr_single(p, model)
-                results.append({"filename": p.name, "text": text, "index": i})
+                if isinstance(p, bytes):
+                    text = self._sequential_lines([p], model)[0:]
+                else:
+                    text = self.ocr_single(p, model)
+                results.append({"filename": f"image_{i:06d}.png", "text": text, "index": i})
             return results
         finally:
             for _, (_, fobj, _) in files:
                 if hasattr(fobj, 'close'):
                     fobj.close()
+
+    def ocr_batch_ordered_texts(
+        self, image_paths: list[Path] | list[bytes], model: str, mode: str = "indexed"
+    ) -> list[str]:
+        """批量 OCR 并按提交索引返回文本。"""
+        results = self.ocr_batch(image_paths, model, mode=mode)
+        payload = {"results": results}
+        return self._parse_and_reorder(payload, len(image_paths))
 
 
 # 全局客户端实例（延迟初始化）
@@ -1420,6 +2046,7 @@ class CalamariOcrEngine(OcrEngine):
         text = None
         use_tesseract_seg = _get_option(options, "calamari_use_tesseract_segmentation", False)
         binarize_lines = _get_option(options, "calamari_binarize_lines", True)
+        line_detector = str(_config.get("line_detector", "projection_debug"))
 
         cache_dir = os.environ.get("CALAMARI_PREFLIGHT_CACHE")
         if cache_dir:
@@ -1431,6 +2058,92 @@ class CalamariOcrEngine(OcrEngine):
                     text = cache_file.read_text(encoding="utf-8")
                     print(f"[DIAG] Preflight cache hit: page {pageno}", flush=True)
                     print(f"[DIAG] use_tesseract_seg={use_tesseract_seg}, tesseract_available={_check_tesseract_available()}", flush=True)
+
+                    if line_detector == "paddle_det":
+                        try:
+                            cached_lineboxes_data = _preflight_cache_read_lineboxes(pageno, "paddle_det")
+                            if not cached_lineboxes_data:
+                                raise RuntimeError(f"PaddleOCR linebox cache missing for page {pageno}")
+                            paddle_line_boxes, source_dpi = cached_lineboxes_data
+                            if not paddle_line_boxes:
+                                _write_empty_hocr_page(
+                                    input_file,
+                                    output_hocr,
+                                    output_text,
+                                    f"PaddleOCR cache has no line boxes for page {pageno}",
+                                )
+                                return
+                            target_dpi = _get_image_dpi(input_file)
+                            if source_dpi != target_dpi:
+                                paddle_line_boxes = _scale_lineboxes_dpi(
+                                    paddle_line_boxes,
+                                    source_dpi,
+                                    target_dpi,
+                                )
+                            paddle_line_boxes = _scale_lineboxes_to_image(
+                                paddle_line_boxes,
+                                input_file,
+                            )
+                            texts = text.splitlines()
+                            print(
+                                f"[DIAG] Preflight PaddleOCR cache hit: {len(paddle_line_boxes)} boxes, {len(texts)} texts",
+                                flush=True,
+                            )
+                            final_hocr = _build_simple_hocr_from_lineboxes(
+                                input_file,
+                                paddle_line_boxes,
+                                texts,
+                                dpi_x=target_dpi,
+                                dpi_y=target_dpi,
+                            )
+                            output_hocr.write_text(final_hocr, encoding="utf-8")
+                            output_text.write_text("\n".join(texts), encoding="utf-8")
+                            print("[SUCCESS] Preflight: Generated hOCR from PaddleOCR line boxes", flush=True)
+                            return
+                        except Exception as e:
+                            raise RuntimeError(
+                                f"Preflight PaddleOCR hOCR failed for page {pageno}: {e}"
+                            ) from e
+
+                    if line_detector == "chrome_screenai":
+                        try:
+                            cached_lineboxes_data = _preflight_cache_read_lineboxes(pageno, "chrome_screenai")
+                            if cached_lineboxes_data:
+                                chrome_line_boxes, source_dpi = cached_lineboxes_data
+                                target_dpi = _get_image_dpi(input_file)
+                                if source_dpi != target_dpi:
+                                    chrome_line_boxes = _scale_lineboxes_dpi(
+                                        chrome_line_boxes,
+                                        source_dpi,
+                                        target_dpi,
+                                    )
+                                chrome_line_boxes = _scale_lineboxes_to_image(
+                                    chrome_line_boxes,
+                                    input_file,
+                                )
+                                texts = text.splitlines()
+                                print(
+                                    f"[DIAG] Preflight Chrome cache hit: {len(chrome_line_boxes)} boxes, {len(texts)} texts",
+                                    flush=True,
+                                )
+                                final_hocr = _build_simple_hocr_from_lineboxes(
+                                    input_file,
+                                    chrome_line_boxes,
+                                    texts,
+                                    dpi_x=target_dpi,
+                                    dpi_y=target_dpi,
+                                )
+                                output_hocr.write_text(final_hocr, encoding="utf-8")
+                                output_text.write_text("\n".join(texts), encoding="utf-8")
+                                print("[SUCCESS] Preflight: Generated hOCR from cached Chrome ScreenAI line boxes", flush=True)
+                                return
+                            raise RuntimeError(
+                                f"Preflight Chrome linebox cache missing for page {pageno}"
+                            )
+                        except Exception as e:
+                            raise RuntimeError(
+                                f"Preflight Chrome hOCR cache failed for page {pageno}: {e}"
+                            ) from e
 
                     # Preflight模式下也使用Tesseract hOCR替换方案
                     if use_tesseract_seg and _check_tesseract_available():
@@ -1466,7 +2179,7 @@ class CalamariOcrEngine(OcrEngine):
                             # 替换hOCR中的文本
                             final_hocr = _replace_hocr_line_texts(tesseract_hocr_full, calamari_texts)
                             output_hocr.write_text(final_hocr, encoding="utf-8")
-                            output_text.write_text(final_hocr, encoding="utf-8")
+                            output_text.write_text("\n".join(calamari_texts), encoding="utf-8")
                             print(f"[SUCCESS] Preflight: Generated hOCR preserving all lines", flush=True)
                             return
                         except Exception as e:
@@ -1477,6 +2190,8 @@ class CalamariOcrEngine(OcrEngine):
             client = _get_client()
             seg_mode = _config.get("segmentation", "server")
             use_tesseract_seg = _get_option(options, "calamari_use_tesseract_segmentation", False)
+            if line_detector == "tesseract":
+                use_tesseract_seg = True
 
             # 使用 Tesseract 行分割模式
             # 暂时禁用，使用fallback路径
@@ -1520,7 +2235,7 @@ class CalamariOcrEngine(OcrEngine):
 
                                 # 直接写入输出并返回
                                 output_hocr.write_text(final_hocr, encoding="utf-8")
-                                output_text.write_text(final_hocr, encoding="utf-8")
+                                output_text.write_text("\n".join(calamari_texts), encoding="utf-8")
                                 print(f"[SUCCESS] Generated hOCR with all {len(line_bboxes)} lines preserved", flush=True)
                                 return
                             else:
@@ -1535,6 +2250,52 @@ class CalamariOcrEngine(OcrEngine):
 
             # 降级到原有方法
             if not use_tesseract_seg:
+                if seg_mode == "client" and line_detector in ("chrome_screenai", "paddle_det"):
+                    if line_detector == "chrome_screenai":
+                        line_boxes = _detect_lines_with_chrome_screenai(input_file)
+                        label = "Chrome ScreenAI"
+                        line_boxes = _scale_lineboxes_to_image(
+                            line_boxes,
+                            input_file,
+                        )
+                    else:
+                        line_boxes = _detect_lines_with_paddle_det(input_file)
+                        label = "PaddleOCR"
+                    if not line_boxes:
+                        _write_empty_hocr_page(
+                            input_file,
+                            output_hocr,
+                            output_text,
+                            f"{label} returned no line boxes",
+                        )
+                        return
+                    print(f"[DIAG] {label} detected {len(line_boxes)} lines", flush=True)
+                    line_images = _crop_line_images_by_lineboxes(
+                        input_file,
+                        line_boxes,
+                        binarize=binarize_lines,
+                    )
+                    print(f"[DIAG] Cropped {len(line_images)} {label} line images", flush=True)
+                    texts = client.ocr_batch_ordered_texts(
+                        line_images,
+                        model,
+                        mode=_config["batch_mode"],
+                    )
+                    with Image.open(input_file) as img:
+                        dpi_info = img.info.get("dpi", (300, 300))
+                        dpi_x = int(round(dpi_info[0])) if dpi_info[0] else 300
+                        dpi_y = int(round(dpi_info[1])) if dpi_info[1] else 300
+                    final_hocr = _build_simple_hocr_from_lineboxes(
+                        input_file,
+                        line_boxes,
+                        texts,
+                        dpi_x=dpi_x,
+                        dpi_y=dpi_y,
+                    )
+                    output_hocr.write_text(final_hocr, encoding="utf-8")
+                    output_text.write_text("\n".join(texts), encoding="utf-8")
+                    print(f"[SUCCESS] Generated hOCR from {label} line boxes", flush=True)
+                    return
                 if seg_mode == "client":
                     text = client.ocr_page_client_seg(input_file, model)
                 else:
@@ -1549,8 +2310,6 @@ class CalamariOcrEngine(OcrEngine):
             text = client.ocr_single(input_file, model)
 
         # 获取图片尺寸和 DPI 用于 hOCR bbox
-        from PIL import Image
-
         with Image.open(input_file) as img:
             w, h = img.size
             dpi_info = img.info.get("dpi", (300, 300))
@@ -1563,8 +2322,14 @@ class CalamariOcrEngine(OcrEngine):
         )
 
         # 生成 hOCR — 检测实际行位置
-        text_lines = [ln for ln in text.splitlines() if ln.strip()]
-        log.info("[DIAG] After splitlines and strip: %d text lines from text length %d", len(text_lines), len(text))
+        text_lines = text.splitlines()
+        non_empty_text_lines = sum(1 for ln in text_lines if ln.strip())
+        log.info(
+            "[DIAG] After splitlines preserving empty lines: total=%d non_empty=%d text length=%d",
+            len(text_lines),
+            non_empty_text_lines,
+            len(text),
+        )
         if not text_lines:
             text_lines = [text] if text.strip() else [""]
 
@@ -1597,9 +2362,26 @@ class CalamariOcrEngine(OcrEngine):
             detected = tesseract_line_bboxes
             log.info("[SUCCESS] Using Tesseract line bboxes: %d lines", len(detected))
         else:
-            # 使用投影法检测
-            log.warning("[FALLBACK] Using projection method instead of Tesseract!")
-            detected = _detect_line_positions(input_file)
+            line_detector = str(_config.get("line_detector", "projection_debug"))
+            if line_detector == "chrome_screenai":
+                try:
+                    chrome_line_boxes = _detect_lines_with_chrome_screenai(input_file)
+                    detected = [tuple(line_box.bbox) for line_box in chrome_line_boxes]
+                    log.info("[SUCCESS] Using Chrome ScreenAI line bboxes: %d lines", len(detected))
+                except Exception as e:
+                    log.warning("Chrome ScreenAI line detection failed in hOCR mapping: %s", e)
+                    detected = None
+            elif line_detector == "paddle_det":
+                try:
+                    paddle_line_boxes = _detect_lines_with_paddle_det(input_file)
+                    detected = [tuple(line_box.bbox) for line_box in paddle_line_boxes]
+                    log.info("[SUCCESS] Using PaddleOCR line bboxes: %d lines", len(detected))
+                except Exception as e:
+                    raise RuntimeError(f"PaddleOCR line detection failed in hOCR mapping: {e}") from e
+            if detected is None:
+                # 使用投影法检测
+                log.warning("[FALLBACK] Using projection method instead of Tesseract!")
+                detected = _detect_line_positions(input_file)
             if detected:
                 log.info(
                     "hOCR diag: detected %d lines, first=%s last=%s",
@@ -1723,6 +2505,152 @@ class CalamariOcrEngine(OcrEngine):
         raise NotImplementedError("Use hOCR rendering path")
 
 
+class ChromeScreenAIOcrEngine(OcrEngine):
+    @staticmethod
+    def version() -> str:
+        try:
+            backend = ChromeScreenAIBackend(
+                light_mode=bool(_config.get("chrome_screenai_light", False)),
+                force_horizontal=bool(_config.get("chrome_screenai_force_horizontal", True)),
+            )
+            version = backend._get_screen_ai().version
+            return f"{version[0]}.{version[1]}"
+        except Exception:
+            return "unavailable"
+
+    @staticmethod
+    def creator_tag(options: OcrOptions) -> str:
+        return f"Chrome ScreenAI OCR {ChromeScreenAIOcrEngine.version()}"
+
+    def __str__(self) -> str:
+        return f"Chrome ScreenAI OCR {self.version()}"
+
+    @staticmethod
+    def languages(options: OcrOptions) -> Set[str]:
+        return {"eng"}
+
+    @staticmethod
+    def get_orientation(
+        input_file: Path, options: OcrOptions
+    ) -> OrientationConfidence:
+        return OrientationConfidence(angle=0, confidence=0.0)
+
+    @staticmethod
+    def supports_generate_ocr() -> bool:
+        return True
+
+    @staticmethod
+    def generate_ocr(
+        input_file: Path,
+        options: OcrOptions,
+        page_number: int = 0,
+    ):
+        backend = ChromeScreenAIBackend(
+            light_mode=bool(_config.get("chrome_screenai_light", False)),
+            force_horizontal=bool(_config.get("chrome_screenai_force_horizontal", True)),
+        )
+        filter_types = str(_config.get("chrome_screenai_filter_types", "printed"))
+        min_confidence = float(_config.get("chrome_screenai_min_confidence", 0.0) or 0.0)
+        return backend.generate_ocr_tree(
+            input_file,
+            page_number=page_number,
+            filter_printed_text=(filter_types != "all"),
+            min_confidence=min_confidence,
+        )
+
+    @staticmethod
+    def generate_hocr(
+        input_file: Path,
+        output_hocr: Path,
+        output_text: Path,
+        options: OcrOptions,
+    ) -> None:
+        raise NotImplementedError("Chrome ScreenAI uses the direct generate_ocr path")
+
+    @staticmethod
+    def generate_pdf(
+        input_file: Path,
+        output_pdf: Path,
+        output_text: Path,
+        options: OcrOptions,
+    ) -> None:
+        raise NotImplementedError("Use fpdf2/direct OCR rendering path")
+
+
+class PaddleOcrEngine(OcrEngine):
+    @staticmethod
+    def version() -> str:
+        return str(_config.get("paddle_ocr_version", "PP-OCRv6") or "PP-OCRv6")
+
+    @staticmethod
+    def creator_tag(options: OcrOptions) -> str:
+        return f"PaddleOCR {PaddleOcrEngine.version()}"
+
+    def __str__(self) -> str:
+        return f"PaddleOCR {self.version()}"
+
+    @staticmethod
+    def languages(options: OcrOptions) -> Set[str]:
+        lang = str(_config.get("paddle_ocr_lang", "en") or "en")
+        aliases = {lang, "eng", "en"}
+        if lang == "ch":
+            aliases.update({"chi_sim", "chi_tra"})
+        if lang == "japan":
+            aliases.add("jpn")
+        return aliases
+
+    @staticmethod
+    def get_orientation(
+        input_file: Path, options: OcrOptions
+    ) -> OrientationConfidence:
+        return OrientationConfidence(angle=0, confidence=0.0)
+
+    @staticmethod
+    def generate_hocr(
+        input_file: Path,
+        output_hocr: Path,
+        output_text: Path,
+        options: OcrOptions,
+    ) -> None:
+        settings = PaddleOcrSettings(
+            ocr_version=str(_config.get("paddle_ocr_version", "PP-OCRv6") or "PP-OCRv6"),
+            lang=str(_config.get("paddle_ocr_lang", "en") or "en"),
+            det_model_name=str(_config.get("paddle_ocr_det_model", "") or ""),
+            rec_model_name=str(_config.get("paddle_ocr_rec_model", "") or ""),
+            det_model_dir=str(_config.get("paddle_ocr_det_model_dir", "") or ""),
+            rec_model_dir=str(_config.get("paddle_ocr_rec_model_dir", "") or ""),
+            device=str(_config.get("paddle_ocr_device", "gpu:0") or "gpu:0"),
+            engine=str(_config.get("paddle_ocr_engine", "") or ""),
+            enable_mkldnn=_config.get("paddle_ocr_enable_mkldnn"),
+            cpu_threads=_config.get("paddle_ocr_cpu_threads"),
+            enable_hpi=_config.get("paddle_ocr_enable_hpi"),
+            rec_batch_size=_config.get("paddle_ocr_rec_batch_size"),
+            min_confidence=float(_config.get("paddle_ocr_min_confidence", 0.0) or 0.0),
+            return_word_box=bool(_config.get("paddle_ocr_return_word_box", False)),
+            paddle_python=str(_config.get("paddle_ocr_python", "") or ""),
+            paddle_source_dir=str(_config.get("paddle_ocr_source_dir", "") or ""),
+        )
+        page_number = 0
+        m = re.match(r"(\d+)_", input_file.name)
+        if m:
+            page_number = max(0, int(m.group(1)) - 1)
+        result = run_paddle_ocr_page(
+            input_file,
+            page_number=page_number,
+            settings=settings,
+        )
+        write_paddle_hocr(result, output_hocr, output_text)
+
+    @staticmethod
+    def generate_pdf(
+        input_file: Path,
+        output_pdf: Path,
+        output_text: Path,
+        options: OcrOptions,
+    ) -> None:
+        raise NotImplementedError("Use hOCR rendering path")
+
+
 # ---------------------------------------------------------------------------
 # pluggy hooks
 # ---------------------------------------------------------------------------
@@ -1777,6 +2705,18 @@ def add_options(parser):
         help="预飞渲染 DPI（默认 300）",
     )
     calamari_group.add_argument(
+        "--calamari-preflight-batch-lines",
+        type=int,
+        default=512,
+        help="预飞模式每个 Calamari 子批最多行数（默认 512）",
+    )
+    calamari_group.add_argument(
+        "--calamari-preflight-batch-mb",
+        type=int,
+        default=64,
+        help="预飞模式每个 Calamari 子批最多图像字节数 MB（默认 64）",
+    )
+    calamari_group.add_argument(
         "--calamari-use-tesseract-segmentation",
         action="store_true",
         default=False,
@@ -1793,6 +2733,173 @@ def add_options(parser):
         action="store_true",
         default=False,
         help="启用页面纠偏（小角度修正±10°，提高识别准确率）",
+    )
+    calamari_group.add_argument(
+        "--calamari-line-detector",
+        choices=["projection_debug", "tesseract", "chrome_screenai", "paddle_det"],
+        default="paddle_det",
+        help="客户端行检测器：projection_debug（旧投影法）、tesseract（legacy）、chrome_screenai 或 paddle_det。",
+    )
+    calamari_group.add_argument(
+        "--chrome-screenai-light",
+        action="store_true",
+        default=False,
+        help="Chrome ScreenAI 使用轻量模式。",
+    )
+    calamari_group.add_argument(
+        "--chrome-screenai-min-confidence",
+        type=float,
+        default=0.0,
+        help="Chrome ScreenAI 行检测最低置信度阈值。",
+    )
+    calamari_group.add_argument(
+        "--chrome-screenai-filter-types",
+        choices=["printed", "all"],
+        default="printed",
+        help="Chrome ScreenAI 检测结果过滤：printed 仅保留印刷文本，all 保留全部。",
+    )
+    calamari_group.add_argument(
+        "--chrome-screenai-text-layer-mode",
+        choices=["native_direct", "proxy_match"],
+        default="native_direct",
+        help="Chrome ScreenAI 文本层模式：native_direct 完全直通；proxy_match 由 OCRmyPDF-AIH 代理匹配文本层。",
+    )
+    calamari_group.add_argument(
+        "--chrome-screenai-force-horizontal",
+        action="store_true",
+        default=True,
+        help="Chrome ScreenAI 结果强制按横排书页坐标匹配：从上到下、同一行从左到右（默认启用）。",
+    )
+    calamari_group.add_argument(
+        "--chrome-screenai-text-cleanup",
+        choices=["mode_default", "clear_all", "rasterize"],
+        default="mode_default",
+        help="Chrome OCR 前文字层处理：默认按 mode；clear_all 轻量删除全部文字；rasterize 显式栅格化。",
+    )
+    calamari_group.add_argument(
+        "--chrome-screenai-rasterize-dpi",
+        type=int,
+        default=300,
+        help="Chrome 显式栅格化清理的 DPI。",
+    )
+    calamari_group.add_argument(
+        "--chrome-screenai-rasterize-quality",
+        type=int,
+        default=88,
+        help="Chrome 显式栅格化清理的 JPEG 质量（1-100）。",
+    )
+    calamari_group.add_argument(
+        "--calamari-paddle-model",
+        default="PP-OCRv5_server_det",
+        help="PaddleOCR 文本检测模型名称。",
+    )
+    calamari_group.add_argument(
+        "--calamari-paddle-device",
+        default="gpu:0",
+        help="PaddleOCR 推理设备，例如 gpu:0、cpu。",
+    )
+    calamari_group.add_argument(
+        "--calamari-paddle-python",
+        default="",
+        help="外部 PaddleOCR Python 解释器路径；留空则自动发现。",
+    )
+    calamari_group.add_argument(
+        "--calamari-paddle-source-dir",
+        default="",
+        help="外部 PaddleOCR 源码目录，用于 PYTHONPATH；留空则自动发现。",
+    )
+    calamari_group.add_argument(
+        "--calamari-paddle-min-confidence",
+        type=float,
+        default=0.0,
+        help="PaddleOCR 行检测最低置信度阈值。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-version",
+        choices=["auto", "PP-OCRv6", "PP-OCRv5"],
+        default="PP-OCRv6",
+        help="PaddleOCR 全链路 OCR 版本基线。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-lang",
+        default="en",
+        help="PaddleOCR 全链路识别语言，例如 en、ch、japan。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-det-model",
+        default="",
+        help="PaddleOCR 全链路检测模型名称；留空按版本自动选择。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-rec-model",
+        default="",
+        help="PaddleOCR 全链路识别模型名称；留空按版本自动选择。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-det-model-dir",
+        default="",
+        help="PaddleOCR 全链路检测模型目录。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-rec-model-dir",
+        default="",
+        help="PaddleOCR 全链路识别模型目录。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-device",
+        default="gpu:0",
+        help="PaddleOCR 全链路推理设备，例如 auto、gpu:0、cpu。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-engine",
+        default="",
+        help="PaddleOCR 推理引擎，例如 paddle、paddle_static；留空用默认。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-enable-mkldnn",
+        action="store_true",
+        default=False,
+        help="PaddleOCR CPU 模式启用 MKL-DNN。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-cpu-threads",
+        type=int,
+        default=None,
+        help="PaddleOCR CPU 推理线程数。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-enable-hpi",
+        action="store_true",
+        default=None,
+        help="PaddleOCR 启用高性能推理。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-rec-batch-size",
+        type=int,
+        default=16,
+        help="PaddleOCR 识别 batch size。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-min-confidence",
+        type=float,
+        default=0.0,
+        help="PaddleOCR 全链路最低识别置信度。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-return-word-box",
+        action="store_true",
+        default=False,
+        help="请求 PaddleOCR 返回词级框（若当前版本支持）。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-python",
+        default="",
+        help="PaddleOCR 全链路外部 Python 解释器路径；留空则自动发现。",
+    )
+    calamari_group.add_argument(
+        "--paddle-ocr-source-dir",
+        default="",
+        help="PaddleOCR 全链路源码目录，用于 PYTHONPATH；留空则自动发现。",
     )
 
 
@@ -1820,12 +2927,51 @@ def check_options(options):
     preflight_chunk = _get_option(options, "calamari_preflight_chunk") or _config["preflight_chunk"]
     preflight_dpi = _get_option(options, "calamari_preflight_dpi") or _config["preflight_dpi"]
     preflight_workers = _get_option(options, "calamari_preflight_workers") or _config["preflight_workers"]
+    preflight_batch_lines = _get_option(options, "calamari_preflight_batch_lines") or _config["preflight_batch_lines"]
+    preflight_batch_mb = _get_option(options, "calamari_preflight_batch_mb") or _config["preflight_batch_mb"]
     use_tesseract_seg = _get_option(options, "calamari_use_tesseract_segmentation", False)
     deskew_enabled = _get_option(options, "calamari_deskew", False)
+    line_detector = _get_option(options, "calamari_line_detector") or _config["line_detector"]
+    chrome_screenai_light = _get_option(options, "chrome_screenai_light", False)
+    chrome_screenai_min_confidence = _get_option(options, "chrome_screenai_min_confidence", 0.0)
+    chrome_screenai_filter_types = _get_option(options, "chrome_screenai_filter_types", "printed")
+    chrome_screenai_text_layer_mode = _get_option(options, "chrome_screenai_text_layer_mode", "native_direct")
+    chrome_screenai_force_horizontal = _get_option(options, "chrome_screenai_force_horizontal", True)
+    chrome_screenai_text_cleanup = _get_option(options, "chrome_screenai_text_cleanup", "mode_default")
+    chrome_screenai_rasterize_dpi = _get_option(options, "chrome_screenai_rasterize_dpi", 300)
+    chrome_screenai_rasterize_quality = _get_option(options, "chrome_screenai_rasterize_quality", 88)
+    paddle_det_model = _get_option(options, "calamari_paddle_model", "PP-OCRv5_server_det")
+    paddle_det_device = _get_option(options, "calamari_paddle_device", "gpu:0")
+    paddle_det_min_confidence = _get_option(options, "calamari_paddle_min_confidence", 0.0)
+    paddle_det_python = _get_option(options, "calamari_paddle_python", "")
+    paddle_det_source_dir = _get_option(options, "calamari_paddle_source_dir", "")
+    paddle_ocr_version = _get_option(options, "paddle_ocr_version", "PP-OCRv6")
+    paddle_ocr_lang = _get_option(options, "paddle_ocr_lang", "en")
+    paddle_ocr_det_model = _get_option(options, "paddle_ocr_det_model", "")
+    paddle_ocr_rec_model = _get_option(options, "paddle_ocr_rec_model", "")
+    paddle_ocr_det_model_dir = _get_option(options, "paddle_ocr_det_model_dir", "")
+    paddle_ocr_rec_model_dir = _get_option(options, "paddle_ocr_rec_model_dir", "")
+    paddle_ocr_device = _get_option(options, "paddle_ocr_device", "gpu:0")
+    paddle_ocr_engine = _get_option(options, "paddle_ocr_engine", "")
+    paddle_ocr_enable_mkldnn = _get_option(options, "paddle_ocr_enable_mkldnn", False)
+    paddle_ocr_cpu_threads = _get_option(options, "paddle_ocr_cpu_threads", None)
+    paddle_ocr_enable_hpi = _get_option(options, "paddle_ocr_enable_hpi", None)
+    paddle_ocr_rec_batch_size = _get_option(options, "paddle_ocr_rec_batch_size", 16)
+    paddle_ocr_min_confidence = _get_option(options, "paddle_ocr_min_confidence", 0.0)
+    paddle_ocr_return_word_box = _get_option(options, "paddle_ocr_return_word_box", False)
+    paddle_ocr_python = _get_option(options, "paddle_ocr_python", "")
+    paddle_ocr_source_dir = _get_option(options, "paddle_ocr_source_dir", "")
 
     print(f"[DEBUG] Deskew params: deskew_enabled={deskew_enabled}, use_tesseract_seg={use_tesseract_seg}", flush=True)
-    log.info("[DEBUG] Preflight params: preflight=%s, chunk=%s, dpi=%s, workers=%s",
-             preflight, preflight_chunk, preflight_dpi, preflight_workers)
+    log.info(
+        "[DEBUG] Preflight params: preflight=%s, chunk=%s, dpi=%s, workers=%s, batch_lines=%s, batch_mb=%s",
+        preflight,
+        preflight_chunk,
+        preflight_dpi,
+        preflight_workers,
+        preflight_batch_lines,
+        preflight_batch_mb,
+    )
     log.info("[DEBUG] Deskew params: deskew_enabled=%s, use_tesseract_seg=%s", deskew_enabled, use_tesseract_seg)
     log.info("[DEBUG] extra_attrs=%s", getattr(options, 'extra_attrs', {}))
 
@@ -1838,8 +2984,42 @@ def check_options(options):
     _config["preflight_chunk"] = preflight_chunk
     _config["preflight_dpi"] = preflight_dpi
     _config["preflight_workers"] = preflight_workers
+    _config["preflight_batch_lines"] = max(1, int(preflight_batch_lines or 512))
+    _config["preflight_batch_mb"] = max(1, int(preflight_batch_mb or 64))
     _config["use_tesseract_segmentation"] = use_tesseract_seg
     _config["deskew_enabled"] = deskew_enabled
+    _config["line_detector"] = line_detector
+    _config["chrome_screenai_light"] = bool(chrome_screenai_light)
+    _config["chrome_screenai_min_confidence"] = float(chrome_screenai_min_confidence or 0.0)
+    _config["chrome_screenai_filter_types"] = str(chrome_screenai_filter_types or "printed")
+    _config["chrome_screenai_text_layer_mode"] = str(chrome_screenai_text_layer_mode or "native_direct")
+    _config["chrome_screenai_force_horizontal"] = bool(chrome_screenai_force_horizontal)
+    _config["chrome_screenai_text_cleanup"] = str(chrome_screenai_text_cleanup or "mode_default")
+    _config["chrome_screenai_rasterize_dpi"] = max(72, int(chrome_screenai_rasterize_dpi or 300))
+    _config["chrome_screenai_rasterize_quality"] = max(1, min(100, int(chrome_screenai_rasterize_quality or 88)))
+    _config["paddle_det_model"] = str(paddle_det_model or "PP-OCRv5_server_det")
+    _config["paddle_det_device"] = str(paddle_det_device or "gpu:0")
+    _config["paddle_det_min_confidence"] = float(paddle_det_min_confidence or 0.0)
+    _config["paddle_det_python"] = str(paddle_det_python or "")
+    _config["paddle_det_source_dir"] = str(paddle_det_source_dir or "")
+    _config["paddle_ocr_version"] = str(paddle_ocr_version or "PP-OCRv6")
+    _config["paddle_ocr_lang"] = str(paddle_ocr_lang or "en")
+    _config["paddle_ocr_det_model"] = str(paddle_ocr_det_model or "")
+    _config["paddle_ocr_rec_model"] = str(paddle_ocr_rec_model or "")
+    _config["paddle_ocr_det_model_dir"] = str(paddle_ocr_det_model_dir or "")
+    _config["paddle_ocr_rec_model_dir"] = str(paddle_ocr_rec_model_dir or "")
+    _config["paddle_ocr_device"] = str(paddle_ocr_device or "gpu:0")
+    _config["paddle_ocr_engine"] = str(paddle_ocr_engine or "")
+    _config["paddle_ocr_enable_mkldnn"] = paddle_ocr_enable_mkldnn
+    _config["paddle_ocr_cpu_threads"] = (
+        int(paddle_ocr_cpu_threads) if paddle_ocr_cpu_threads else None
+    )
+    _config["paddle_ocr_enable_hpi"] = paddle_ocr_enable_hpi
+    _config["paddle_ocr_rec_batch_size"] = max(1, int(paddle_ocr_rec_batch_size or 16))
+    _config["paddle_ocr_min_confidence"] = float(paddle_ocr_min_confidence or 0.0)
+    _config["paddle_ocr_return_word_box"] = bool(paddle_ocr_return_word_box)
+    _config["paddle_ocr_python"] = str(paddle_ocr_python or "")
+    _config["paddle_ocr_source_dir"] = str(paddle_ocr_source_dir or "")
 
     # 预飞模式强制使用 client 分割（需要客户端切行才能跨页合并）
     if preflight:
@@ -1887,6 +3067,8 @@ def validate(pdfinfo: "PdfInfo", options: "OcrOptions"):
     try:
         _run_preflight(pdfinfo, options)
     except Exception as e:
+        if str(_config.get("line_detector", "")) == "chrome_screenai":
+            raise
         log.warning(
             "Preflight OCR failed: %s — falling back to per-page OCR", e
         )
@@ -1897,4 +3079,8 @@ def get_ocr_engine(options):
     engine = getattr(options, "ocr_engine", "auto") if options else "auto"
     if engine in ("calamari",):
         return CalamariOcrEngine()
+    if engine in ("chrome_screenai",):
+        return ChromeScreenAIOcrEngine()
+    if engine in ("paddle_ocr",):
+        return PaddleOcrEngine()
     return None
