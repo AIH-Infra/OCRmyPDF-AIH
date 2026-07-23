@@ -16,11 +16,10 @@ from tempfile import mkdtemp
 import PIL
 
 from ocrmypdf.aih_chrome_screenai import ChromeScreenAIBackend
-from ocrmypdf.aih_text_layer import rasterize_pdf_pages, strip_hidden_text_layer
 from ocrmypdf._concurrent import Executor
 from ocrmypdf._graft import OcrGrafter
 from ocrmypdf._jobcontext import PageContext, PdfContext
-from ocrmypdf._options import OcrOptions, ProcessingMode, _pages_from_ranges
+from ocrmypdf._options import OcrOptions, _pages_from_ranges
 from ocrmypdf._pipeline import (
     copy_final,
     is_ocr_required,
@@ -199,43 +198,16 @@ def _run_chrome_screenai_native_pdf(
         options.extra_attrs["_actual_output_type"] = "pdf"
 
     output_pdf = work_folder / "chrome_screenai_native.pdf"
-    chrome_input_pdf = origin_pdf
-    cleanup_mode = str(extra.get("chrome_screenai_text_cleanup", "mode_default"))
-    if options.mode == ProcessingMode.redo and cleanup_mode == "mode_default":
-        chrome_input_pdf = work_folder / "chrome_screenai_redo_input.pdf"
-        strip_report = strip_hidden_text_layer(
-            origin_pdf,
-            chrome_input_pdf,
-            pages=pages,
-        )
-        log.info(
-            "Chrome ScreenAI redo: removed %d hidden text operation(s) on %d page(s)",
-            strip_report.hidden_show_operations_removed,
-            len(strip_report.pages_changed),
-        )
-        if strip_report.pages_with_visible_text:
-            log.warning(
-                "Chrome ScreenAI redo preserved visible text on page(s): %s",
-                strip_report.pages_with_visible_text[:20],
-            )
-        if strip_report.form_xobjects_skipped:
-            log.warning(
-                "Chrome ScreenAI redo skipped %d nested Form XObject(s) because only a page subset was selected",
-                strip_report.form_xobjects_skipped,
-            )
-
-    workers = max(1, min(16, int(options.jobs or 4)))
+    workers = max(1, int(options.jobs or 1))
     log.info("Chrome ScreenAI native PDF path using %d page worker(s)", workers)
     backend = ChromeScreenAIBackend(
-        light_mode=bool(extra.get("chrome_screenai_light", False)),
-        force_horizontal=bool(extra.get("chrome_screenai_force_horizontal", True)),
+        light_mode=bool(extra.get("chrome_screenai_light", False))
     )
     result = backend.ocr_to_searchable_pdf(
-        chrome_input_pdf,
+        origin_pdf,
         output_pdf,
         pages=pages,
         workers=workers,
-        collect_result=bool(options.sidecar),
     )
 
     if options.sidecar:
@@ -271,61 +243,11 @@ def _run_pipeline(
             original_filename, start_input_file, work_folder / 'origin.pdf', options
         )
 
-        extra_attrs = getattr(options, "extra_attrs", {})
-        chrome_cleanup = str(
-            extra_attrs.get("chrome_screenai_text_cleanup", "mode_default")
-            or "mode_default"
-        )
-        if options.ocr_engine == "chrome_screenai" and chrome_cleanup in {
-            "clear_all",
-            "rasterize",
-        }:
-            requested_pages = options.pages
-            if isinstance(requested_pages, str):
-                requested_pages = _pages_from_ranges(requested_pages)
-            cleanup_pages = (
-                sorted(page_number + 1 for page_number in requested_pages)
-                if requested_pages
-                else None
-            )
-            prepared_pdf = work_folder / f"chrome_screenai_{chrome_cleanup}_input.pdf"
-            if chrome_cleanup == "clear_all":
-                cleanup_report = strip_hidden_text_layer(
-                    origin_pdf,
-                    prepared_pdf,
-                    pages=cleanup_pages,
-                    scope="all",
-                )
-                log.info(
-                    "Chrome explicit text cleanup removed %d text operation(s), including %d visible operation(s)",
-                    cleanup_report.text_show_operations_removed,
-                    cleanup_report.visible_show_operations_removed,
-                )
-            else:
-                cleanup_report = rasterize_pdf_pages(
-                    origin_pdf,
-                    prepared_pdf,
-                    pages=cleanup_pages,
-                    dpi=int(extra_attrs.get("chrome_screenai_rasterize_dpi", 300) or 300),
-                    jpeg_quality=int(
-                        extra_attrs.get("chrome_screenai_rasterize_quality", 88) or 88
-                    ),
-                )
-                log.info(
-                    "Chrome explicit rasterization processed %d page(s) at %d DPI",
-                    cleanup_report["pages_processed"],
-                    cleanup_report["dpi"],
-                )
-            origin_pdf = prepared_pdf
-
-        chrome_text_layer_mode = str(
-            extra_attrs.get("chrome_screenai_text_layer_mode", "native_direct")
-            or "native_direct"
-        )
-        chrome_native_default = chrome_text_layer_mode == "native_direct"
         if (
             options.ocr_engine == "chrome_screenai"
-            and extra_attrs.get("_chrome_screenai_native_pdf", chrome_native_default)
+            and getattr(options, "extra_attrs", {}).get(
+                "_chrome_screenai_native_pdf", True
+            )
         ):
             return _run_chrome_screenai_native_pdf(
                 options=options,

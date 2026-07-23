@@ -20,10 +20,6 @@ from ocrmypdf.aih_data_structures import DetectorSource, LineBox, poly_from_bbox
 
 _DEFAULT_PADDLE_MODEL = "PP-OCRv5_server_det"
 _DEFAULT_PADDLE_DEVICE = "gpu:0"
-_DEFAULT_PADDLE_SOURCE_DIR: Path | None = None
-_DEFAULT_PADDLE_PYTHON: Path | None = None
-
-
 @dataclass(frozen=True)
 class PaddleEnv:
     python: Path
@@ -113,7 +109,6 @@ def _discover_paddle_env_cached(
         [
             explicit_src,
             env_src,
-            _DEFAULT_PADDLE_SOURCE_DIR,
             *_nearby_paddle_source_dirs(),
         ]
     )
@@ -121,7 +116,7 @@ def _discover_paddle_env_cached(
         for python_path in _venv_python_candidates(source_dir):
             candidate_pairs.append((python_path, source_dir, f"source:{source_dir}"))
 
-    for python_path in _unique_paths([explicit_py, env_py, _DEFAULT_PADDLE_PYTHON]):
+    for python_path in _unique_paths([explicit_py, env_py]):
         source_dir = explicit_src or env_src or _source_dir_from_python(python_path) or python_path.parent
         candidate_pairs.append((python_path, source_dir, f"python:{python_path}"))
 
@@ -179,7 +174,6 @@ def _nearby_paddle_source_dirs() -> list[Path]:
         roots.append(parent)
         roots.append(parent.parent if parent.parent != parent else parent)
     names = [
-        "PaddleOCR-3.7.0",
         "PaddleOCR-3.6.0",
         "PaddleOCR-3.5.0",
         "PaddleOCR",
@@ -202,7 +196,6 @@ def _nearby_paddle_source_dirs() -> list[Path]:
 
 def _venv_python_candidates(source_dir: Path) -> list[Path]:
     venv_names = [
-        ".venv-paddle-cpu",
         ".venv-paddle-gpu",
         ".venv-paddle",
         ".venv",

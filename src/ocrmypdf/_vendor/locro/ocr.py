@@ -131,8 +131,6 @@ class ScreenAI:
             i = page_num - 1
 
             pg = doc[i]
-            if pg.rotation:
-                pg.remove_rotation()
             scale = min(1.0, self._max_dim / max(pg.rect.width, pg.rect.height))
             dpi = int(72 * scale * 2)
             pix = pg.get_pixmap(dpi=dpi)
@@ -282,34 +280,10 @@ def _overlay_text(
             y0 = w.y * sy
             x1 = (w.x + w.width) * sx
             y1 = (w.y + w.height) * sy
-            _insert_invisible_word(page, fitz.Rect(x0, y0, x1, y1), w.text)
-
-
-def _insert_invisible_word(page, rect, text: str) -> None:
-    """Insert invisible horizontal text constrained to the OCR word box."""
-    import fitz  # noqa: F811
-
-    if rect.is_empty or rect.width <= 0 or rect.height <= 0:
-        return
-
-    font_size = max(1.0, rect.height * 0.8)
-    for _ in range(6):
-        spare = page.insert_textbox(
-            rect,
-            text,
-            fontsize=font_size,
-            render_mode=3,  # invisible
-            rotate=0,
-            align=fitz.TEXT_ALIGN_LEFT,
-        )
-        if spare >= 0:
-            return
-        font_size *= 0.82
-
-    page.insert_text(
-        fitz.Point(rect.x0, rect.y1 - max(1.0, font_size) * 0.1),
-        text,
-        fontsize=max(1.0, font_size),
-        render_mode=3,
-        rotate=0,
-    )
+            font_size = max(1.0, (y1 - y0) * 0.8)
+            page.insert_text(
+                fitz.Point(x0, y1 - font_size * 0.1),
+                w.text,
+                fontsize=font_size,
+                render_mode=3,  # invisible
+            )

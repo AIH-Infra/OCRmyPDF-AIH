@@ -52,11 +52,6 @@ from ocrmypdf import hookimpl
 from ocrmypdf.pluginspec import OcrEngine, OrientationConfidence
 from ocrmypdf.aih_chrome_screenai import ChromeScreenAIBackend
 from ocrmypdf.aih_line_detection import detect_lines_paddle_det
-from ocrmypdf.aih_paddle_ocr import (
-    PaddleOcrSettings,
-    run_paddle_ocr_page,
-    write_paddle_hocr,
-)
 
 if TYPE_CHECKING:
     from collections.abc import Set
@@ -83,38 +78,15 @@ _config = {
     "preflight_chunk": 10,  # 每批处理的页数
     "preflight_dpi": 300,  # 预渲染 DPI
     "preflight_workers": 1,  # 渲染并行度
-    "preflight_batch_lines": 512,  # 每个 Calamari multipart 子批最多行数
-    "preflight_batch_mb": 64,  # 每个 Calamari multipart 子批最多图像字节数
     "line_detector": "paddle_det",  # paddle_det | chrome_screenai | tesseract | projection_debug
     "chrome_screenai_light": False,
     "chrome_screenai_min_confidence": 0.0,
     "chrome_screenai_filter_types": "printed",
-    "chrome_screenai_text_layer_mode": "native_direct",
-    "chrome_screenai_force_horizontal": True,
-    "chrome_screenai_text_cleanup": "mode_default",
-    "chrome_screenai_rasterize_dpi": 300,
-    "chrome_screenai_rasterize_quality": 88,
     "paddle_det_model": "PP-OCRv5_server_det",
     "paddle_det_device": "gpu:0",
     "paddle_det_min_confidence": 0.0,
     "paddle_det_python": "",
     "paddle_det_source_dir": "",
-    "paddle_ocr_version": "PP-OCRv6",
-    "paddle_ocr_lang": "en",
-    "paddle_ocr_det_model": "",
-    "paddle_ocr_rec_model": "",
-    "paddle_ocr_det_model_dir": "",
-    "paddle_ocr_rec_model_dir": "",
-    "paddle_ocr_device": "gpu:0",
-    "paddle_ocr_engine": "",
-    "paddle_ocr_enable_mkldnn": False,
-    "paddle_ocr_cpu_threads": None,
-    "paddle_ocr_enable_hpi": None,
-    "paddle_ocr_rec_batch_size": 16,
-    "paddle_ocr_min_confidence": 0.0,
-    "paddle_ocr_return_word_box": False,
-    "paddle_ocr_python": "",
-    "paddle_ocr_source_dir": "",
 }
 
 # ---------------------------------------------------------------------------
@@ -790,7 +762,6 @@ def _detect_lines_with_chrome_screenai(
         "image_path": str(image_path),
         "page_number": int(page_number),
         "light_mode": bool(_config.get("chrome_screenai_light", False)),
-        "force_horizontal": bool(_config.get("chrome_screenai_force_horizontal", True)),
         "filter_printed_text": _config.get("chrome_screenai_filter_types", "printed") != "all",
         "min_confidence": float(_config.get("chrome_screenai_min_confidence", 0.0) or 0.0),
     }
@@ -1508,62 +1479,13 @@ def _preflight_ocr_chunk(
     pages_lines: dict[int, list[bytes]],
     model: str,
 ) -> dict[int, str]:
-    """对一个 chunk 的行图片做有界批量 OCR，返回 {pageno: text}.
+    """对一个 chunk 的所有行图片做一次批量 OCR，返回 {pageno: text}.
 
     文件名编码: image_PPPPPP_LLLLLL.png (P=页码, L=行号)
     这样可以从返回结果中还原页码和行号。
     """
-    batch_files = []
-    batch_bytes = 0
+    all_files = []
     page_line_counts: dict[int, int] = {}
-    page_texts: dict[int, dict[int, str]] = {}
-    batch_count = 0
-    total_elapsed = 0.0
-    max_batch_lines = max(1, int(_config.get("preflight_batch_lines", 512) or 512))
-    max_batch_bytes = max(1, int(_config.get("preflight_batch_mb", 64) or 64)) * 1024 * 1024
-
-    def flush_batch() -> bool:
-        nonlocal batch_files, batch_bytes, batch_count, total_elapsed
-        if not batch_files:
-            return True
-        batch_count += 1
-        current_files = batch_files
-        current_bytes = batch_bytes
-        batch_files = []
-        batch_bytes = 0
-
-        log.info(
-            "Preflight batch part %d: %d lines, %.1f MB",
-            batch_count,
-            len(current_files),
-            current_bytes / (1024 * 1024),
-        )
-        try:
-            resp = client._session.post(
-                f"{client.base_url}/ocr/batch",
-                files=current_files,
-                data={"model": model, "mode": "indexed"},
-                timeout=client.timeout,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-        except Exception as e:
-            log.warning("Preflight batch part %d request failed: %s", batch_count, e)
-            return False
-
-        total_elapsed += float(payload.get("elapsed_seconds", 0) or 0)
-        for item in payload.get("results", []):
-            if not isinstance(item, dict):
-                continue
-            text = (item.get("text") or "").strip()
-            filename = item.get("filename", "")
-            m = re.search(r"image_(\d+)_(\d+)", filename)
-            if not m:
-                continue
-            pg = int(m.group(1))
-            ln = int(m.group(2))
-            page_texts.setdefault(pg, {})[ln] = text
-        return True
 
     for pageno in sorted(pages_lines.keys()):
         lines = pages_lines[pageno]
@@ -1572,29 +1494,44 @@ def _preflight_ocr_chunk(
         page_line_counts[pageno] = len(lines)
         for line_idx, img_bytes in enumerate(lines):
             filename = f"image_{pageno:06d}_{line_idx:06d}.png"
-            if (
-                batch_files
-                and (
-                    len(batch_files) >= max_batch_lines
-                    or batch_bytes + len(img_bytes) > max_batch_bytes
-                )
-                and not flush_batch()
-            ):
-                return {}
-            batch_files.append(("files", (filename, img_bytes, "image/png")))
-            batch_bytes += len(img_bytes)
+            all_files.append(("files", (filename, img_bytes, "image/png")))
 
-    if not batch_files and not page_line_counts:
+    if not all_files:
         return {}
 
-    total_lines = sum(page_line_counts.values())
+    total_lines = len(all_files)
     log.info(
-        "Preflight batch: %d pages, %d lines total, limit=%d lines/%.1f MB",
-        len(page_line_counts), total_lines, max_batch_lines, max_batch_bytes / (1024 * 1024),
+        "Preflight batch: %d pages, %d lines total",
+        len(page_line_counts), total_lines,
     )
 
-    if not flush_batch():
+    # 发送到 /ocr/batch
+    try:
+        resp = client._session.post(
+            f"{client.base_url}/ocr/batch",
+            files=all_files,
+            data={"model": model, "mode": "indexed"},
+            timeout=client.timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception as e:
+        log.warning("Preflight batch request failed: %s", e)
         return {}
+
+    # 解析结果：从 filename 还原 pageno + line_idx
+    page_texts: dict[int, dict[int, str]] = {}
+    for item in payload.get("results", []):
+        if not isinstance(item, dict):
+            continue
+        text = (item.get("text") or "").strip()
+        filename = item.get("filename", "")
+        m = re.search(r"image_(\d+)_(\d+)", filename)
+        if not m:
+            continue
+        pg = int(m.group(1))
+        ln = int(m.group(2))
+        page_texts.setdefault(pg, {})[ln] = text
 
     # 按行号排序拼接（保留空行以保持索引对齐）
     result: dict[int, str] = {}
@@ -1603,9 +1540,10 @@ def _preflight_ocr_chunk(
         ordered = [lines_dict.get(i, "") for i in range(max(lines_dict.keys()) + 1)]
         result[pageno] = "\n".join(ordered)
 
+    elapsed = payload.get("elapsed_seconds", 0)
     log.info(
-        "Preflight batch done: %d lines in %d part(s), %.1fs (%.1f lines/s)",
-        total_lines, batch_count, total_elapsed, total_lines / max(total_elapsed, 0.01),
+        "Preflight batch done: %d lines in %.1fs (%.1f lines/s)",
+        total_lines, elapsed, total_lines / max(elapsed, 0.01),
     )
     return result
 
@@ -2510,8 +2448,7 @@ class ChromeScreenAIOcrEngine(OcrEngine):
     def version() -> str:
         try:
             backend = ChromeScreenAIBackend(
-                light_mode=bool(_config.get("chrome_screenai_light", False)),
-                force_horizontal=bool(_config.get("chrome_screenai_force_horizontal", True)),
+                light_mode=bool(_config.get("chrome_screenai_light", False))
             )
             version = backend._get_screen_ai().version
             return f"{version[0]}.{version[1]}"
@@ -2546,8 +2483,7 @@ class ChromeScreenAIOcrEngine(OcrEngine):
         page_number: int = 0,
     ):
         backend = ChromeScreenAIBackend(
-            light_mode=bool(_config.get("chrome_screenai_light", False)),
-            force_horizontal=bool(_config.get("chrome_screenai_force_horizontal", True)),
+            light_mode=bool(_config.get("chrome_screenai_light", False))
         )
         filter_types = str(_config.get("chrome_screenai_filter_types", "printed"))
         min_confidence = float(_config.get("chrome_screenai_min_confidence", 0.0) or 0.0)
@@ -2575,80 +2511,6 @@ class ChromeScreenAIOcrEngine(OcrEngine):
         options: OcrOptions,
     ) -> None:
         raise NotImplementedError("Use fpdf2/direct OCR rendering path")
-
-
-class PaddleOcrEngine(OcrEngine):
-    @staticmethod
-    def version() -> str:
-        return str(_config.get("paddle_ocr_version", "PP-OCRv6") or "PP-OCRv6")
-
-    @staticmethod
-    def creator_tag(options: OcrOptions) -> str:
-        return f"PaddleOCR {PaddleOcrEngine.version()}"
-
-    def __str__(self) -> str:
-        return f"PaddleOCR {self.version()}"
-
-    @staticmethod
-    def languages(options: OcrOptions) -> Set[str]:
-        lang = str(_config.get("paddle_ocr_lang", "en") or "en")
-        aliases = {lang, "eng", "en"}
-        if lang == "ch":
-            aliases.update({"chi_sim", "chi_tra"})
-        if lang == "japan":
-            aliases.add("jpn")
-        return aliases
-
-    @staticmethod
-    def get_orientation(
-        input_file: Path, options: OcrOptions
-    ) -> OrientationConfidence:
-        return OrientationConfidence(angle=0, confidence=0.0)
-
-    @staticmethod
-    def generate_hocr(
-        input_file: Path,
-        output_hocr: Path,
-        output_text: Path,
-        options: OcrOptions,
-    ) -> None:
-        settings = PaddleOcrSettings(
-            ocr_version=str(_config.get("paddle_ocr_version", "PP-OCRv6") or "PP-OCRv6"),
-            lang=str(_config.get("paddle_ocr_lang", "en") or "en"),
-            det_model_name=str(_config.get("paddle_ocr_det_model", "") or ""),
-            rec_model_name=str(_config.get("paddle_ocr_rec_model", "") or ""),
-            det_model_dir=str(_config.get("paddle_ocr_det_model_dir", "") or ""),
-            rec_model_dir=str(_config.get("paddle_ocr_rec_model_dir", "") or ""),
-            device=str(_config.get("paddle_ocr_device", "gpu:0") or "gpu:0"),
-            engine=str(_config.get("paddle_ocr_engine", "") or ""),
-            enable_mkldnn=_config.get("paddle_ocr_enable_mkldnn"),
-            cpu_threads=_config.get("paddle_ocr_cpu_threads"),
-            enable_hpi=_config.get("paddle_ocr_enable_hpi"),
-            rec_batch_size=_config.get("paddle_ocr_rec_batch_size"),
-            min_confidence=float(_config.get("paddle_ocr_min_confidence", 0.0) or 0.0),
-            return_word_box=bool(_config.get("paddle_ocr_return_word_box", False)),
-            paddle_python=str(_config.get("paddle_ocr_python", "") or ""),
-            paddle_source_dir=str(_config.get("paddle_ocr_source_dir", "") or ""),
-        )
-        page_number = 0
-        m = re.match(r"(\d+)_", input_file.name)
-        if m:
-            page_number = max(0, int(m.group(1)) - 1)
-        result = run_paddle_ocr_page(
-            input_file,
-            page_number=page_number,
-            settings=settings,
-        )
-        write_paddle_hocr(result, output_hocr, output_text)
-
-    @staticmethod
-    def generate_pdf(
-        input_file: Path,
-        output_pdf: Path,
-        output_text: Path,
-        options: OcrOptions,
-    ) -> None:
-        raise NotImplementedError("Use hOCR rendering path")
 
 
 # ---------------------------------------------------------------------------
@@ -2705,18 +2567,6 @@ def add_options(parser):
         help="预飞渲染 DPI（默认 300）",
     )
     calamari_group.add_argument(
-        "--calamari-preflight-batch-lines",
-        type=int,
-        default=512,
-        help="预飞模式每个 Calamari 子批最多行数（默认 512）",
-    )
-    calamari_group.add_argument(
-        "--calamari-preflight-batch-mb",
-        type=int,
-        default=64,
-        help="预飞模式每个 Calamari 子批最多图像字节数 MB（默认 64）",
-    )
-    calamari_group.add_argument(
         "--calamari-use-tesseract-segmentation",
         action="store_true",
         default=False,
@@ -2759,36 +2609,6 @@ def add_options(parser):
         help="Chrome ScreenAI 检测结果过滤：printed 仅保留印刷文本，all 保留全部。",
     )
     calamari_group.add_argument(
-        "--chrome-screenai-text-layer-mode",
-        choices=["native_direct", "proxy_match"],
-        default="native_direct",
-        help="Chrome ScreenAI 文本层模式：native_direct 完全直通；proxy_match 由 OCRmyPDF-AIH 代理匹配文本层。",
-    )
-    calamari_group.add_argument(
-        "--chrome-screenai-force-horizontal",
-        action="store_true",
-        default=True,
-        help="Chrome ScreenAI 结果强制按横排书页坐标匹配：从上到下、同一行从左到右（默认启用）。",
-    )
-    calamari_group.add_argument(
-        "--chrome-screenai-text-cleanup",
-        choices=["mode_default", "clear_all", "rasterize"],
-        default="mode_default",
-        help="Chrome OCR 前文字层处理：默认按 mode；clear_all 轻量删除全部文字；rasterize 显式栅格化。",
-    )
-    calamari_group.add_argument(
-        "--chrome-screenai-rasterize-dpi",
-        type=int,
-        default=300,
-        help="Chrome 显式栅格化清理的 DPI。",
-    )
-    calamari_group.add_argument(
-        "--chrome-screenai-rasterize-quality",
-        type=int,
-        default=88,
-        help="Chrome 显式栅格化清理的 JPEG 质量（1-100）。",
-    )
-    calamari_group.add_argument(
         "--calamari-paddle-model",
         default="PP-OCRv5_server_det",
         help="PaddleOCR 文本检测模型名称。",
@@ -2813,93 +2633,6 @@ def add_options(parser):
         type=float,
         default=0.0,
         help="PaddleOCR 行检测最低置信度阈值。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-version",
-        choices=["auto", "PP-OCRv6", "PP-OCRv5"],
-        default="PP-OCRv6",
-        help="PaddleOCR 全链路 OCR 版本基线。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-lang",
-        default="en",
-        help="PaddleOCR 全链路识别语言，例如 en、ch、japan。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-det-model",
-        default="",
-        help="PaddleOCR 全链路检测模型名称；留空按版本自动选择。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-rec-model",
-        default="",
-        help="PaddleOCR 全链路识别模型名称；留空按版本自动选择。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-det-model-dir",
-        default="",
-        help="PaddleOCR 全链路检测模型目录。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-rec-model-dir",
-        default="",
-        help="PaddleOCR 全链路识别模型目录。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-device",
-        default="gpu:0",
-        help="PaddleOCR 全链路推理设备，例如 auto、gpu:0、cpu。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-engine",
-        default="",
-        help="PaddleOCR 推理引擎，例如 paddle、paddle_static；留空用默认。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-enable-mkldnn",
-        action="store_true",
-        default=False,
-        help="PaddleOCR CPU 模式启用 MKL-DNN。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-cpu-threads",
-        type=int,
-        default=None,
-        help="PaddleOCR CPU 推理线程数。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-enable-hpi",
-        action="store_true",
-        default=None,
-        help="PaddleOCR 启用高性能推理。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-rec-batch-size",
-        type=int,
-        default=16,
-        help="PaddleOCR 识别 batch size。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-min-confidence",
-        type=float,
-        default=0.0,
-        help="PaddleOCR 全链路最低识别置信度。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-return-word-box",
-        action="store_true",
-        default=False,
-        help="请求 PaddleOCR 返回词级框（若当前版本支持）。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-python",
-        default="",
-        help="PaddleOCR 全链路外部 Python 解释器路径；留空则自动发现。",
-    )
-    calamari_group.add_argument(
-        "--paddle-ocr-source-dir",
-        default="",
-        help="PaddleOCR 全链路源码目录，用于 PYTHONPATH；留空则自动发现。",
     )
 
 
@@ -2927,51 +2660,21 @@ def check_options(options):
     preflight_chunk = _get_option(options, "calamari_preflight_chunk") or _config["preflight_chunk"]
     preflight_dpi = _get_option(options, "calamari_preflight_dpi") or _config["preflight_dpi"]
     preflight_workers = _get_option(options, "calamari_preflight_workers") or _config["preflight_workers"]
-    preflight_batch_lines = _get_option(options, "calamari_preflight_batch_lines") or _config["preflight_batch_lines"]
-    preflight_batch_mb = _get_option(options, "calamari_preflight_batch_mb") or _config["preflight_batch_mb"]
     use_tesseract_seg = _get_option(options, "calamari_use_tesseract_segmentation", False)
     deskew_enabled = _get_option(options, "calamari_deskew", False)
     line_detector = _get_option(options, "calamari_line_detector") or _config["line_detector"]
     chrome_screenai_light = _get_option(options, "chrome_screenai_light", False)
     chrome_screenai_min_confidence = _get_option(options, "chrome_screenai_min_confidence", 0.0)
     chrome_screenai_filter_types = _get_option(options, "chrome_screenai_filter_types", "printed")
-    chrome_screenai_text_layer_mode = _get_option(options, "chrome_screenai_text_layer_mode", "native_direct")
-    chrome_screenai_force_horizontal = _get_option(options, "chrome_screenai_force_horizontal", True)
-    chrome_screenai_text_cleanup = _get_option(options, "chrome_screenai_text_cleanup", "mode_default")
-    chrome_screenai_rasterize_dpi = _get_option(options, "chrome_screenai_rasterize_dpi", 300)
-    chrome_screenai_rasterize_quality = _get_option(options, "chrome_screenai_rasterize_quality", 88)
     paddle_det_model = _get_option(options, "calamari_paddle_model", "PP-OCRv5_server_det")
     paddle_det_device = _get_option(options, "calamari_paddle_device", "gpu:0")
     paddle_det_min_confidence = _get_option(options, "calamari_paddle_min_confidence", 0.0)
     paddle_det_python = _get_option(options, "calamari_paddle_python", "")
     paddle_det_source_dir = _get_option(options, "calamari_paddle_source_dir", "")
-    paddle_ocr_version = _get_option(options, "paddle_ocr_version", "PP-OCRv6")
-    paddle_ocr_lang = _get_option(options, "paddle_ocr_lang", "en")
-    paddle_ocr_det_model = _get_option(options, "paddle_ocr_det_model", "")
-    paddle_ocr_rec_model = _get_option(options, "paddle_ocr_rec_model", "")
-    paddle_ocr_det_model_dir = _get_option(options, "paddle_ocr_det_model_dir", "")
-    paddle_ocr_rec_model_dir = _get_option(options, "paddle_ocr_rec_model_dir", "")
-    paddle_ocr_device = _get_option(options, "paddle_ocr_device", "gpu:0")
-    paddle_ocr_engine = _get_option(options, "paddle_ocr_engine", "")
-    paddle_ocr_enable_mkldnn = _get_option(options, "paddle_ocr_enable_mkldnn", False)
-    paddle_ocr_cpu_threads = _get_option(options, "paddle_ocr_cpu_threads", None)
-    paddle_ocr_enable_hpi = _get_option(options, "paddle_ocr_enable_hpi", None)
-    paddle_ocr_rec_batch_size = _get_option(options, "paddle_ocr_rec_batch_size", 16)
-    paddle_ocr_min_confidence = _get_option(options, "paddle_ocr_min_confidence", 0.0)
-    paddle_ocr_return_word_box = _get_option(options, "paddle_ocr_return_word_box", False)
-    paddle_ocr_python = _get_option(options, "paddle_ocr_python", "")
-    paddle_ocr_source_dir = _get_option(options, "paddle_ocr_source_dir", "")
 
     print(f"[DEBUG] Deskew params: deskew_enabled={deskew_enabled}, use_tesseract_seg={use_tesseract_seg}", flush=True)
-    log.info(
-        "[DEBUG] Preflight params: preflight=%s, chunk=%s, dpi=%s, workers=%s, batch_lines=%s, batch_mb=%s",
-        preflight,
-        preflight_chunk,
-        preflight_dpi,
-        preflight_workers,
-        preflight_batch_lines,
-        preflight_batch_mb,
-    )
+    log.info("[DEBUG] Preflight params: preflight=%s, chunk=%s, dpi=%s, workers=%s",
+             preflight, preflight_chunk, preflight_dpi, preflight_workers)
     log.info("[DEBUG] Deskew params: deskew_enabled=%s, use_tesseract_seg=%s", deskew_enabled, use_tesseract_seg)
     log.info("[DEBUG] extra_attrs=%s", getattr(options, 'extra_attrs', {}))
 
@@ -2984,42 +2687,17 @@ def check_options(options):
     _config["preflight_chunk"] = preflight_chunk
     _config["preflight_dpi"] = preflight_dpi
     _config["preflight_workers"] = preflight_workers
-    _config["preflight_batch_lines"] = max(1, int(preflight_batch_lines or 512))
-    _config["preflight_batch_mb"] = max(1, int(preflight_batch_mb or 64))
     _config["use_tesseract_segmentation"] = use_tesseract_seg
     _config["deskew_enabled"] = deskew_enabled
     _config["line_detector"] = line_detector
     _config["chrome_screenai_light"] = bool(chrome_screenai_light)
     _config["chrome_screenai_min_confidence"] = float(chrome_screenai_min_confidence or 0.0)
     _config["chrome_screenai_filter_types"] = str(chrome_screenai_filter_types or "printed")
-    _config["chrome_screenai_text_layer_mode"] = str(chrome_screenai_text_layer_mode or "native_direct")
-    _config["chrome_screenai_force_horizontal"] = bool(chrome_screenai_force_horizontal)
-    _config["chrome_screenai_text_cleanup"] = str(chrome_screenai_text_cleanup or "mode_default")
-    _config["chrome_screenai_rasterize_dpi"] = max(72, int(chrome_screenai_rasterize_dpi or 300))
-    _config["chrome_screenai_rasterize_quality"] = max(1, min(100, int(chrome_screenai_rasterize_quality or 88)))
     _config["paddle_det_model"] = str(paddle_det_model or "PP-OCRv5_server_det")
     _config["paddle_det_device"] = str(paddle_det_device or "gpu:0")
     _config["paddle_det_min_confidence"] = float(paddle_det_min_confidence or 0.0)
     _config["paddle_det_python"] = str(paddle_det_python or "")
     _config["paddle_det_source_dir"] = str(paddle_det_source_dir or "")
-    _config["paddle_ocr_version"] = str(paddle_ocr_version or "PP-OCRv6")
-    _config["paddle_ocr_lang"] = str(paddle_ocr_lang or "en")
-    _config["paddle_ocr_det_model"] = str(paddle_ocr_det_model or "")
-    _config["paddle_ocr_rec_model"] = str(paddle_ocr_rec_model or "")
-    _config["paddle_ocr_det_model_dir"] = str(paddle_ocr_det_model_dir or "")
-    _config["paddle_ocr_rec_model_dir"] = str(paddle_ocr_rec_model_dir or "")
-    _config["paddle_ocr_device"] = str(paddle_ocr_device or "gpu:0")
-    _config["paddle_ocr_engine"] = str(paddle_ocr_engine or "")
-    _config["paddle_ocr_enable_mkldnn"] = paddle_ocr_enable_mkldnn
-    _config["paddle_ocr_cpu_threads"] = (
-        int(paddle_ocr_cpu_threads) if paddle_ocr_cpu_threads else None
-    )
-    _config["paddle_ocr_enable_hpi"] = paddle_ocr_enable_hpi
-    _config["paddle_ocr_rec_batch_size"] = max(1, int(paddle_ocr_rec_batch_size or 16))
-    _config["paddle_ocr_min_confidence"] = float(paddle_ocr_min_confidence or 0.0)
-    _config["paddle_ocr_return_word_box"] = bool(paddle_ocr_return_word_box)
-    _config["paddle_ocr_python"] = str(paddle_ocr_python or "")
-    _config["paddle_ocr_source_dir"] = str(paddle_ocr_source_dir or "")
 
     # 预飞模式强制使用 client 分割（需要客户端切行才能跨页合并）
     if preflight:
@@ -3081,6 +2759,4 @@ def get_ocr_engine(options):
         return CalamariOcrEngine()
     if engine in ("chrome_screenai",):
         return ChromeScreenAIOcrEngine()
-    if engine in ("paddle_ocr",):
-        return PaddleOcrEngine()
     return None

@@ -31,9 +31,8 @@ _PROGRESS_STATE_KEY = "_ocrmypdf_page_progress_state"
 class ChromeScreenAIBackend:
     """Thin adapter around the local locro ScreenAI wrapper."""
 
-    def __init__(self, *, light_mode: bool = False, force_horizontal: bool = True):
+    def __init__(self, *, light_mode: bool = False):
         self.light_mode = light_mode
-        self.force_horizontal = force_horizontal
         self._screen_ai = None
         self._thread_local = threading.local()
         self._screen_ai_init_lock = threading.Lock()
@@ -66,10 +65,7 @@ class ChromeScreenAIBackend:
         page_number: int = 0,
         filter_printed_text: bool = True,
         min_confidence: float = 0.0,
-        force_horizontal: bool | None = None,
     ) -> list[LineBox]:
-        if force_horizontal is None:
-            force_horizontal = self.force_horizontal
         with Image.open(image_path) as img:
             original_size = img.size
             screen_ai = self._get_screen_ai()
@@ -127,11 +123,7 @@ class ChromeScreenAIBackend:
                     source=DetectorSource.CHROME_SCREENAI.value,
                     text=getattr(line, "text", "") or "",
                     content_type=content_type,
-                    direction=(
-                        TextDirection.LEFT_TO_RIGHT
-                        if force_horizontal
-                        else TextDirection.from_value(getattr(line, "direction", None))
-                    ),
+                    direction=TextDirection.from_value(getattr(line, "direction", None)),
                     block_id=getattr(line, "block_id", None),
                     paragraph_id=getattr(line, "paragraph_id", None),
                     language=getattr(line, "language", None),
@@ -139,26 +131,6 @@ class ChromeScreenAIBackend:
                 )
             )
 
-        if force_horizontal:
-            boxes = _sort_line_boxes_top_to_bottom(boxes)
-            boxes = [
-                LineBox(
-                    page=box.page,
-                    line=index,
-                    bbox=box.bbox,
-                    poly=box.poly,
-                    confidence=box.confidence,
-                    source=box.source,
-                    text=box.text,
-                    content_type=box.content_type,
-                    direction=TextDirection.LEFT_TO_RIGHT,
-                    block_id=box.block_id,
-                    paragraph_id=box.paragraph_id,
-                    language=box.language,
-                    words=box.words,
-                )
-                for index, box in enumerate(boxes)
-            ]
         return boxes
 
     def _normalize_raw_line(self, line: Any) -> list[Any]:
@@ -288,7 +260,6 @@ class ChromeScreenAIBackend:
         *,
         pages: list[int] | None = None,
         workers: int = 1,
-        collect_result: bool = True,
     ) -> Any:
         workers = max(1, int(workers or 1))
         if workers <= 1:
@@ -343,7 +314,6 @@ class ChromeScreenAIBackend:
             output_pdf=output_pdf,
             selected_pages=selected_pages,
             workers=workers,
-            collect_result=collect_result,
         )
 
     def _ocr_pdf_via_chunk_processes(
@@ -353,30 +323,28 @@ class ChromeScreenAIBackend:
         output_pdf: Path,
         selected_pages: list[int],
         workers: int,
-        collect_result: bool,
     ):
         import fitz
 
-        if collect_result:
-            try:
-                from ocrmypdf._vendor.locro.models import (
-                    BoundingBox as VendorBoundingBox,
-                    OcrBlock,
-                    OcrLine,
-                    OcrPage,
-                    OcrResult,
-                    OcrWord,
-                )
-            except Exception:
-                _ensure_locro_import_path()
-                from locro.models import (
-                    BoundingBox as VendorBoundingBox,
-                    OcrBlock,
-                    OcrLine,
-                    OcrPage,
-                    OcrResult,
-                    OcrWord,
-                )
+        try:
+            from ocrmypdf._vendor.locro.models import (
+                BoundingBox as VendorBoundingBox,
+                OcrBlock,
+                OcrLine,
+                OcrPage,
+                OcrResult,
+                OcrWord,
+            )
+        except Exception:
+            _ensure_locro_import_path()
+            from locro.models import (
+                BoundingBox as VendorBoundingBox,
+                OcrBlock,
+                OcrLine,
+                OcrPage,
+                OcrResult,
+                OcrWord,
+            )
 
         progress_state = getattr(builtins, _PROGRESS_STATE_KEY, None)
         max_workers = max(1, min(int(workers or 1), len(selected_pages)))
@@ -412,22 +380,6 @@ class ChromeScreenAIBackend:
             pending = list(chunk_jobs)
             completed_pages = 0
 
-            def stop_running_workers() -> None:
-                for item in list(running):
-                    proc = item.get("proc")
-                    if proc is None or proc.poll() is not None:
-                        continue
-                    proc.terminate()
-                for item in list(running):
-                    proc = item.get("proc")
-                    if proc is None or proc.poll() is not None:
-                        continue
-                    try:
-                        proc.communicate(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        proc.kill()
-                        proc.communicate()
-
             def launch(job: dict):
                 job_payload = {
                     "input_pdf": str(job["input_pdf"]),
@@ -435,7 +387,6 @@ class ChromeScreenAIBackend:
                     "result_json": str(job["result_json"]),
                     "progress_json": str(job["progress_json"]),
                     "light_mode": self.light_mode,
-                    "collect_result": bool(collect_result),
                 }
                 token = base64.b64encode(
                     json.dumps(job_payload, ensure_ascii=False).encode("utf-8")
@@ -459,119 +410,112 @@ class ChromeScreenAIBackend:
                 )
                 running.append({"proc": proc, "job": job})
 
-            try:
-                while pending and len(running) < max_workers:
-                    launch(pending.pop(0))
+            while pending and len(running) < max_workers:
+                launch(pending.pop(0))
 
-                while running:
-                    for item in list(running):
-                        proc = item["proc"]
-                        if proc.poll() is None:
-                            if progress_state is not None:
-                                total_done = completed_pages
-                                for running_item in running:
-                                    progress_path = Path(running_item["job"]["progress_json"])
-                                    if not progress_path.exists():
-                                        continue
-                                    try:
-                                        progress_data = json.loads(progress_path.read_text(encoding="utf-8"))
-                                    except Exception:
-                                        continue
-                                    chunk_page_count = len(running_item["job"]["chunk_pages"])
-                                    total_done += max(
-                                        0,
-                                        min(
-                                            int(progress_data.get("page_current", 0) or 0),
-                                            chunk_page_count,
-                                        ),
-                                    )
-                                progress_state["page_current"] = min(total_done, len(selected_pages))
-                                progress_state["page_total"] = len(selected_pages)
-                                progress_state["page_desc"] = f"Chrome ScreenAI OCR ({max_workers} workers)"
-                            continue
-                        stdout, stderr = proc.communicate()
-                        job = item["job"]
-                        if proc.returncode != 0:
-                            raise RuntimeError(
-                                stderr.strip() or stdout.strip() or f"Chrome chunk worker failed: {job['input_pdf']}"
-                            )
-                        result_meta = json.loads(job["result_json"].read_text(encoding="utf-8"))
-                        if not result_meta.get("ok"):
-                            raise RuntimeError(result_meta.get("error", "Chrome chunk worker failed"))
-                        completed_pages += len(job["chunk_pages"])
+            while running:
+                for item in list(running):
+                    proc = item["proc"]
+                    if proc.poll() is None:
                         if progress_state is not None:
-                            progress_state["page_current"] = completed_pages
+                            total_done = completed_pages
+                            for running_item in running:
+                                progress_path = Path(running_item["job"]["progress_json"])
+                                if not progress_path.exists():
+                                    continue
+                                try:
+                                    progress_data = json.loads(progress_path.read_text(encoding="utf-8"))
+                                except Exception:
+                                    continue
+                                chunk_page_count = len(running_item["job"]["chunk_pages"])
+                                total_done += max(
+                                    0,
+                                    min(
+                                        int(progress_data.get("page_current", 0) or 0),
+                                        chunk_page_count,
+                                    ),
+                                )
+                            progress_state["page_current"] = min(total_done, len(selected_pages))
                             progress_state["page_total"] = len(selected_pages)
                             progress_state["page_desc"] = f"Chrome ScreenAI OCR ({max_workers} workers)"
-                        running.remove(item)
-                        if pending:
-                            launch(pending.pop(0))
-                        break
-                    else:
-                        import time
-                        time.sleep(0.2)
-
-                ordered_pages: list[Any] = []
-                merged_pdf = None
-                for job in chunk_jobs:
+                        continue
+                    stdout, stderr = proc.communicate()
+                    job = item["job"]
+                    if proc.returncode != 0:
+                        raise RuntimeError(
+                            stderr.strip() or stdout.strip() or f"Chrome chunk worker failed: {job['input_pdf']}"
+                        )
                     result_meta = json.loads(job["result_json"].read_text(encoding="utf-8"))
-                    if collect_result:
-                        for page_index, page_dict in enumerate(result_meta.get("result", {}).get("pages", [])):
-                            source_page_number = job["chunk_pages"][page_index]
-                            blocks = []
-                            for block_dict in page_dict.get("blocks", []):
-                                lines = []
-                                for line_dict in block_dict.get("lines", []):
-                                    words = []
-                                    for word_dict in line_dict.get("words", []):
-                                        word_bbox = word_dict.get("bounding_box")
-                                        words.append(
-                                            OcrWord(
-                                                text=word_dict.get("text", "") or "",
-                                                confidence=word_dict.get("confidence"),
-                                                bounding_box=VendorBoundingBox(**word_bbox) if word_bbox else None,
-                                            )
-                                        )
-                                    line_bbox = line_dict.get("bounding_box")
-                                    lines.append(
-                                        OcrLine(
-                                            text=line_dict.get("text", "") or "",
-                                            words=words,
-                                            bounding_box=VendorBoundingBox(**line_bbox) if line_bbox else None,
-                                        )
-                                    )
-                                block_bbox = block_dict.get("bounding_box")
-                                blocks.append(
-                                    OcrBlock(
-                                        block_type=block_dict.get("block_type", "paragraph"),
-                                        lines=lines,
-                                        bounding_box=VendorBoundingBox(**block_bbox) if block_bbox else None,
+                    if not result_meta.get("ok"):
+                        raise RuntimeError(result_meta.get("error", "Chrome chunk worker failed"))
+                    completed_pages += len(job["chunk_pages"])
+                    if progress_state is not None:
+                        progress_state["page_current"] = completed_pages
+                        progress_state["page_total"] = len(selected_pages)
+                        progress_state["page_desc"] = f"Chrome ScreenAI OCR ({max_workers} workers)"
+                    running.remove(item)
+                    if pending:
+                        launch(pending.pop(0))
+                    break
+                else:
+                    import time
+                    time.sleep(0.2)
+
+            ordered_pages: list[Any] = []
+            merged_pdf = None
+            for job in chunk_jobs:
+                result_meta = json.loads(job["result_json"].read_text(encoding="utf-8"))
+                for page_index, page_dict in enumerate(result_meta.get("result", {}).get("pages", [])):
+                    source_page_number = job["chunk_pages"][page_index]
+                    blocks = []
+                    for block_dict in page_dict.get("blocks", []):
+                        lines = []
+                        for line_dict in block_dict.get("lines", []):
+                            words = []
+                            for word_dict in line_dict.get("words", []):
+                                word_bbox = word_dict.get("bounding_box")
+                                words.append(
+                                    OcrWord(
+                                        text=word_dict.get("text", "") or "",
+                                        confidence=word_dict.get("confidence"),
+                                        bounding_box=VendorBoundingBox(**word_bbox) if word_bbox else None,
                                     )
                                 )
-                            ordered_pages.append(
-                                OcrPage(
-                                    page_number=source_page_number,
-                                    blocks=blocks,
-                                    width=page_dict.get("width"),
-                                    height=page_dict.get("height"),
+                            line_bbox = line_dict.get("bounding_box")
+                            lines.append(
+                                OcrLine(
+                                    text=line_dict.get("text", "") or "",
+                                    words=words,
+                                    bounding_box=VendorBoundingBox(**line_bbox) if line_bbox else None,
                                 )
                             )
-                    if merged_pdf is None:
-                        import pikepdf
+                        block_bbox = block_dict.get("bounding_box")
+                        blocks.append(
+                            OcrBlock(
+                                block_type=block_dict.get("block_type", "paragraph"),
+                                lines=lines,
+                                bounding_box=VendorBoundingBox(**block_bbox) if block_bbox else None,
+                            )
+                        )
+                    ordered_pages.append(
+                        OcrPage(
+                            page_number=source_page_number,
+                            blocks=blocks,
+                            width=page_dict.get("width"),
+                            height=page_dict.get("height"),
+                        )
+                    )
+                if merged_pdf is None:
+                    import pikepdf
 
-                        merged_pdf = pikepdf.Pdf.new()
-                    with pikepdf.open(str(job["output_pdf"])) as chunk_pdf:
-                        merged_pdf.pages.extend(chunk_pdf.pages)
+                    merged_pdf = pikepdf.Pdf.new()
+                with pikepdf.open(str(job["output_pdf"])) as chunk_pdf:
+                    merged_pdf.pages.extend(chunk_pdf.pages)
 
-                if merged_pdf is not None:
-                    merged_pdf.save(str(output_pdf))
-                    merged_pdf.close()
-                if collect_result:
-                    return OcrResult(pages=ordered_pages)
-                return type("ChromeOcrResult", (), {"pages": []})()
-            except BaseException:
-                stop_running_workers()
-                raise
+            if merged_pdf is not None:
+                merged_pdf.save(str(output_pdf))
+                merged_pdf.close()
+            return OcrResult(pages=ordered_pages)
 
     def generate_ocr_tree(
         self,
@@ -581,7 +525,7 @@ class ChromeScreenAIBackend:
         filter_printed_text: bool = False,
         min_confidence: float = 0.0,
     ) -> tuple[OcrElement, str]:
-        line_boxes = self.detect_lines_external(
+        line_boxes = self.detect_lines(
             image_path,
             page_number=page_number,
             filter_printed_text=filter_printed_text,
@@ -647,97 +591,6 @@ class ChromeScreenAIBackend:
                 text_lines.append(line_box.text)
 
         return page, "\n".join(text_lines)
-
-    def detect_lines_external(
-        self,
-        image_path: Path,
-        *,
-        page_number: int = 0,
-        filter_printed_text: bool = True,
-        min_confidence: float = 0.0,
-        timeout: int = 180,
-    ) -> list[LineBox]:
-        """Run Chrome ScreenAI line detection in a child process.
-
-        Chrome ScreenAI is a native DLL. Keeping proxy text-layer detection out of
-        the Streamlit/OCR parent process prevents native access violations from
-        taking down the whole Web UI.
-        """
-        job = {
-            "image_path": str(Path(image_path)),
-            "page_number": int(page_number or 0),
-            "light_mode": bool(self.light_mode),
-            "force_horizontal": bool(self.force_horizontal),
-            "filter_printed_text": bool(filter_printed_text),
-            "min_confidence": float(min_confidence or 0.0),
-        }
-        token = base64.b64encode(json.dumps(job).encode("utf-8")).decode("ascii")
-        env = os.environ.copy()
-        env.setdefault("PYTHONIOENCODING", "utf-8")
-        proc = subprocess.run(
-            [sys.executable, "-m", "ocrmypdf.aih_chrome_line_worker", token],
-            cwd=str(Path(__file__).resolve().parents[2]),
-            env=env,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            timeout=timeout,
-            check=False,
-        )
-
-        payload = _load_worker_json(proc.stdout)
-        if proc.returncode != 0:
-            detail = ""
-            if payload and payload.get("error"):
-                detail = str(payload["error"])
-            elif proc.stderr.strip():
-                detail = proc.stderr.strip()
-            elif proc.stdout.strip():
-                detail = proc.stdout.strip()
-            else:
-                detail = f"exit code {proc.returncode}"
-            raise RuntimeError(f"Chrome ScreenAI worker failed: {detail}")
-
-        if not payload:
-            detail = proc.stderr.strip() or proc.stdout.strip() or "empty worker output"
-            raise RuntimeError(f"Chrome ScreenAI worker returned invalid JSON: {detail}")
-        if not payload.get("ok"):
-            raise RuntimeError(f"Chrome ScreenAI worker failed: {payload.get('error', 'unknown error')}")
-
-        line_boxes: list[LineBox] = []
-        for index, item in enumerate(payload.get("lines", []) or []):
-            bbox = tuple(float(v) for v in item.get("bbox", (0, 0, 0, 0)))
-            if len(bbox) != 4 or bbox[2] <= bbox[0] or bbox[3] <= bbox[1]:
-                continue
-            words = []
-            for word in item.get("words", []) or []:
-                word_bbox = word.get("bbox")
-                words.append(
-                    (
-                        word.get("text", "") or "",
-                        tuple(float(v) for v in word_bbox) if word_bbox else None,
-                    )
-                )
-            line_boxes.append(
-                LineBox(
-                    page=page_number,
-                    line=index,
-                    bbox=bbox,
-                    poly=poly_from_bbox(bbox),
-                    confidence=float(item.get("confidence", 0.0) or 0.0),
-                    source=DetectorSource.CHROME_SCREENAI.value,
-                    text=item.get("text", "") or "",
-                    content_type=ContentType.from_value(item.get("content_type")),
-                    direction=TextDirection.from_value(item.get("direction")),
-                    block_id=item.get("block_id"),
-                    paragraph_id=item.get("paragraph_id"),
-                    language=item.get("language"),
-                    words=words,
-                )
-            )
-        return line_boxes
 
     def _perform_raw_ocr(self, screen_ai, img: Image.Image):
         perform_ocr = getattr(screen_ai, "_perform_ocr", None)
@@ -824,20 +677,6 @@ class _CompatLine:
         self.words = words
 
 
-def _load_worker_json(output: str) -> dict[str, Any] | None:
-    for line in reversed((output or "").splitlines()):
-        line = line.strip()
-        if not line.startswith("{"):
-            continue
-        try:
-            payload = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(payload, dict):
-            return payload
-    return None
-
-
 def _ocr_bbox(bbox: tuple[int, int, int, int]) -> BoundingBox:
     x0, y0, x1, y1 = bbox
     return BoundingBox(left=float(x0), top=float(y0), right=float(x1), bottom=float(y1))
@@ -864,29 +703,6 @@ def _ocr_direction(direction: TextDirection) -> str | None:
     return None
 
 
-def _sort_line_boxes_top_to_bottom(line_boxes: list[LineBox]) -> list[LineBox]:
-    if not line_boxes:
-        return []
-    heights = sorted(max(1, box.bbox[3] - box.bbox[1]) for box in line_boxes)
-    median_h = heights[len(heights) // 2]
-    row_tol = max(8, int(median_h * 0.65))
-    rows: list[list[LineBox]] = []
-    for box in sorted(line_boxes, key=lambda item: ((item.bbox[1] + item.bbox[3]) / 2, item.bbox[0])):
-        cy = (box.bbox[1] + box.bbox[3]) / 2
-        for row in rows:
-            row_cy = sum((item.bbox[1] + item.bbox[3]) / 2 for item in row) / len(row)
-            if abs(cy - row_cy) <= row_tol:
-                row.append(box)
-                break
-        else:
-            rows.append([box])
-
-    ordered: list[LineBox] = []
-    for row in rows:
-        ordered.extend(sorted(row, key=lambda item: item.bbox[0]))
-    return ordered
-
-
 def _overlay_line_results(
     page,
     lines: list[Any],
@@ -903,40 +719,13 @@ def _overlay_line_results(
             y0 = getattr(word, "y", 0) * sy
             x1 = (getattr(word, "x", 0) + getattr(word, "width", 0)) * sx
             y1 = (getattr(word, "y", 0) + getattr(word, "height", 0)) * sy
-            _insert_invisible_word(
-                page,
-                fitz.Rect(x0, y0, x1, y1),
+            font_size = max(1.0, (y1 - y0) * 0.8)
+            page.insert_text(
+                fitz.Point(x0, y1 - font_size * 0.1),
                 getattr(word, "text", ""),
+                fontsize=font_size,
+                render_mode=3,
             )
-
-
-def _insert_invisible_word(page, rect, text: str) -> None:
-    import fitz  # noqa: F811
-
-    if rect.is_empty or rect.width <= 0 or rect.height <= 0:
-        return
-
-    font_size = max(1.0, rect.height * 0.8)
-    for _ in range(6):
-        spare = page.insert_textbox(
-            rect,
-            text,
-            fontsize=font_size,
-            render_mode=3,
-            rotate=0,
-            align=fitz.TEXT_ALIGN_LEFT,
-        )
-        if spare >= 0:
-            return
-        font_size *= 0.82
-
-    page.insert_text(
-        fitz.Point(rect.x0, rect.y1 - max(1.0, font_size) * 0.1),
-        text,
-        fontsize=max(1.0, font_size),
-        render_mode=3,
-        rotate=0,
-    )
 
 
 def _line_results_to_page(
@@ -1035,6 +824,13 @@ def _ensure_locro_import_path() -> None:
     )
     if configured:
         candidates.append(Path(configured))
+
+    # Repository layout used by AIH-Infra development checkouts.
+    this_file = Path(__file__).resolve()
+    for parent in this_file.parents:
+        if parent.name == "OCRmyPDF-AIH-0.5.0":
+            candidates.append(parent.parent / "chrome-screenai-reverse" / "clv-locro")
+            break
 
     for candidate in candidates:
         if candidate.exists() and str(candidate) not in sys.path:

@@ -54,9 +54,10 @@ def main(argv: list[str] | None = None) -> int:
             Path(job["output_pdf"]),
             workers=1,
         )
-        result_json = {"ok": True}
-        if bool(job.get("collect_result", True)):
-            result_json["result"] = result.to_dict() if hasattr(result, "to_dict") else {}
+        result_json = {
+            "ok": True,
+            "result": result.to_dict() if hasattr(result, "to_dict") else {},
+        }
         Path(job["result_json"]).write_text(
             json.dumps(result_json, ensure_ascii=False),
             encoding="utf-8",

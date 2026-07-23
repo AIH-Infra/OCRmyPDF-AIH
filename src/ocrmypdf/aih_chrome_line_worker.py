@@ -18,16 +18,12 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         job = json.loads(base64.b64decode(argv[0]).decode("utf-8"))
-        backend = ChromeScreenAIBackend(
-            light_mode=bool(job.get("light_mode", False)),
-            force_horizontal=bool(job.get("force_horizontal", True)),
-        )
+        backend = ChromeScreenAIBackend(light_mode=bool(job.get("light_mode", False)))
         line_boxes = backend.detect_lines(
             Path(job["image_path"]),
             page_number=int(job.get("page_number", 0) or 0),
             filter_printed_text=bool(job.get("filter_printed_text", False)),
             min_confidence=float(job.get("min_confidence", 0.0) or 0.0),
-            force_horizontal=bool(job.get("force_horizontal", True)),
         )
         print(
             json.dumps(

@@ -7,8 +7,6 @@ import tempfile
 import time
 from pathlib import Path
 
-from ocrmypdf.aih_file_lock import file_job_lock
-
 
 def ocr_one_file_worker(
     file_data: bytes,
@@ -49,7 +47,7 @@ def ocr_one_file_worker(
             tmp_in_path, tmp_out_path = tmp_in.name, tmp_out.name
 
         plugins = [str(Path(__file__).parent / "aih_progress_plugin.py")]
-        if backend in ("Calamari（HTTP服务）", "PaddleOCR（本地全链路）", "Chrome ScreenAI（本地）"):
+        if backend in ("Calamari（HTTP服务）", "Chrome ScreenAI（本地）"):
             plugin_path = Path(__file__).parent / "aih_calamari_plugin.py"
             if plugin_path.exists():
                 plugins.append(str(plugin_path))
@@ -101,9 +99,7 @@ def ocr_one_file_worker(
             payload["log"] = ("error", fname, f"{fname}：处理失败（{result.name}）(耗时: {elapsed_str})")
 
         if payload["output"] and save_to_disk and output_dir:
-            output_path = Path(output_dir) / out_name
-            with file_job_lock(str(output_path), label=out_name):
-                output_path.write_bytes(out_data)
+            (Path(output_dir) / out_name).write_bytes(out_data)
         return payload
     except Exception as e:
         elapsed = time.time() - start_time
@@ -147,7 +143,7 @@ def ocr_one_file_path_worker(
     start_time = time.time()
     try:
         plugins = [str(Path(__file__).parent / "aih_progress_plugin.py")]
-        if backend in ("Calamari（HTTP服务）", "PaddleOCR（本地全链路）", "Chrome ScreenAI（本地）"):
+        if backend in ("Calamari（HTTP服务）", "Chrome ScreenAI（本地）"):
             plugin_path = Path(__file__).parent / "aih_calamari_plugin.py"
             if plugin_path.exists():
                 plugins.append(str(plugin_path))
@@ -155,13 +151,12 @@ def ocr_one_file_path_worker(
                 raise FileNotFoundError(f"AIH OCR 插件未找到：{plugin_path}")
 
         kw = {**ocr_kwargs, "progress_bar": True}
-        with file_job_lock(input_path, output_path, label=fname):
-            result = ocrmypdf.ocr(
-                input_path,
-                output_path,
-                plugins=plugins,
-                **kw,
-            )
+        result = ocrmypdf.ocr(
+            input_path,
+            output_path,
+            plugins=plugins,
+            **kw,
+        )
 
         elapsed = time.time() - start_time
         elapsed_str = f"{elapsed:.1f}秒"
