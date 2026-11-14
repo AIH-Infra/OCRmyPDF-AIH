@@ -6,8 +6,10 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from argparse import ArgumentParser
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from typing import Any, TypeVar
 
 from ocrmypdf._defaults import DEFAULT_ROTATE_PAGES_THRESHOLD
@@ -17,6 +19,11 @@ from ocrmypdf._plugin_manager import OcrmypdfPluginManager
 from ocrmypdf._version import __version__ as _VERSION
 
 T = TypeVar('T', int, float)
+
+# Engines provided by the bundled AIH plugin, and the option prefixes it adds.
+AIH_OCR_ENGINES = ['calamari', 'paddle_ocr', 'chrome_screenai']
+_AIH_OPTION_PREFIXES = ('--calamari-', '--paddle-ocr-', '--chrome-screenai-')
+_AIH_PLUGIN_PATH = Path(__file__).with_name('aih_calamari_plugin.py')
 
 
 def numeric(basetype: Callable[[Any], T], min_: T | None = None, max_: T | None = None):
@@ -83,7 +90,8 @@ def get_parser():
 Generates a searchable PDF or PDF/A from a regular PDF.
 
 OCRmyPDF rasterizes each page of the input PDF, optionally corrects page
-rotation and performs image processing, runs the Tesseract OCR engine on the
+rotation and performs image processing, runs an OCR engine (Tesseract by
+default; see --ocr-engine for Calamari, PaddleOCR and Chrome ScreenAI) on the
 image, and then creates a PDF from the OCR information.
 """,
         epilog="""\
@@ -182,7 +190,7 @@ Online documentation is located at:
         default=None,
         metavar='FILE',
         help="Generate sidecar text files that contain the same text recognized "
-        "by Tesseract. This may be useful for building a OCR text database. "
+        "by the OCR engine. This may be useful for building a OCR text database. "
         "If FILE is omitted, the sidecar file be named {output_file}.txt; the next "
         "argument must NOT be the name of the input PDF. "
         "If FILE is set to '-', the sidecar is written to stdout (a "
@@ -203,7 +211,9 @@ Online documentation is located at:
         '--jobs',
         metavar='N',
         type=numeric(int, 0, 256),
-        help="Use up to N CPU cores simultaneously (default: use all).",
+        help="Use up to N CPU cores simultaneously (default: use all). "
+        "With --ocr-engine chrome_screenai on a PDF, N is the number of page "
+        "workers (default 8, at most 24).",
     )
     jobcontrol.add_argument(
         '-q', '--quiet', action='store_true', help="Suppress INFO messages"
@@ -314,7 +324,8 @@ Online documentation is located at:
         choices=[mode.value for mode in ProcessingMode],
         default=ProcessingMode.default.value,
         help="Processing mode for pages with existing text. "
-        "'default' errors if text is found. "
+        "'default' removes a hidden OCR text layer (see --hidden-text-layer) and "
+        "OCRs the page again; it errors only if visible text is found. "
         "'force' rasterizes all content and runs OCR (same as --force-ocr). "
         "'skip' skips pages with existing text (same as --skip-text). "
         "'redo' re-OCRs pages, replacing old invisible text (same as --redo-ocr).",
@@ -345,6 +356,17 @@ Online documentation is located at:
         "to text found in raster images. Existing visible text objects will "
         "not be changed. If there is no existing OCR, OCR will be added. "
         "Equivalent to --mode redo.",
+    )
+    ocrsettings.add_argument(
+        '--hidden-text-layer',
+        choices=['strip', 'keep'],
+        default='strip',
+        help="What to do with an invisible text layer left by an earlier OCR. "
+        "'strip' (default) removes it before OCR when the page has an image behind "
+        "it, so the page is OCRed again instead of failing with 'page already has "
+        "text'; visible text is never touched and the input file is not modified. "
+        "'keep' restores upstream behaviour (use with --skip-text to leave "
+        "such pages alone). Applies to --mode default and redo.",
     )
     ocrsettings.add_argument(
         '--skip-big',
@@ -401,12 +423,15 @@ Online documentation is located at:
     )
     advanced.add_argument(
         '--ocr-engine',
-        choices=['auto', 'tesseract', 'none', 'calamari', 'chrome_screenai'],
+        choices=AIH_OCR_ENGINES + ['auto', 'tesseract', 'none'],
         default='auto',
         help="OCR engine to use. 'auto' (default) selects the best available engine. "
         "'tesseract' uses Tesseract OCR. "
-        "'calamari' uses the AIH Calamari plugin. "
+        "'calamari' uses the AIH Calamari plugin (remote HTTP service). "
+        "'paddle_ocr' uses local PaddleOCR (full pipeline). "
         "'chrome_screenai' uses Chrome ScreenAI directly. "
+        "The AIH engines load the bundled AIH plugin automatically, which also "
+        "enables the --calamari-*, --paddle-ocr-* and --chrome-screenai-* options. "
         "'none' skips OCR entirely, useful for PDF/A conversion or image processing "
         "without text recognition.",
     )
@@ -483,6 +508,37 @@ plugins_only_parser.add_argument(
 )
 
 
+def _wants_aih_plugin(argv: list[str]) -> bool:
+    """Return True if the command line needs the bundled AIH plugin.
+
+    True when an AIH engine is selected, an AIH-only option is used, or help is
+    requested (so that --help lists the AIH options too).
+    """
+    for i, arg in enumerate(argv):
+        if arg in ('-h', '--help') or arg.startswith(_AIH_OPTION_PREFIXES):
+            return True
+        if arg == '--ocr-engine' and i + 1 < len(argv):
+            if argv[i + 1] in AIH_OCR_ENGINES:
+                return True
+        elif arg.startswith('--ocr-engine='):
+            if arg.split('=', 1)[1] in AIH_OCR_ENGINES:
+                return True
+    return False
+
+
+def _already_has_aih_plugin(plugins: list[str]) -> bool:
+    """Return True if the user already passed the AIH plugin via --plugin."""
+    for p in plugins:
+        if p in ('ocrmypdf.aih_calamari_plugin', 'aih_calamari_plugin'):
+            return True
+        try:
+            if Path(p).resolve() == _AIH_PLUGIN_PATH.resolve():
+                return True
+        except OSError:
+            pass
+    return False
+
+
 def namespace_to_options(ns) -> OcrOptions:
     """Convert argparse.Namespace to OcrOptions.
 
@@ -538,9 +594,14 @@ def get_options_and_plugins(
 
     # First pass: get plugins so we can register their options
     pre_options, _unused = plugins_only_parser.parse_known_args(args=args)
+    plugins = list(pre_options.plugins)
+    if _wants_aih_plugin(sys.argv[1:] if args is None else list(args)) and not (
+        _already_has_aih_plugin(plugins)
+    ):
+        plugins.append(str(_AIH_PLUGIN_PATH))
 
     # Set up plugin infrastructure with proper initialization
-    plugin_manager = setup_plugin_infrastructure(plugins=pre_options.plugins)
+    plugin_manager = setup_plugin_infrastructure(plugins=plugins)
 
     # Get parser and let plugins add their options
     parser = get_parser()

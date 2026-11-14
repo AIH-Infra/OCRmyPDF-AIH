@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# OCRmyPDF-AIH Install Script (macOS/Linux)
+# AIH-OCRmyPDF Install Script (macOS/Linux)
 
 set -e
 cd "$(dirname "$0")"
@@ -17,7 +17,7 @@ fi
 
 echo ""
 echo "============================================================"
-echo "   OCRmyPDF-AIH Environment Setup"
+echo "   AIH-OCRmyPDF Environment Setup"
 echo "   Batch PDF OCR Pipeline"
 echo "============================================================"
 echo ""
@@ -86,14 +86,15 @@ echo "[OK] Virtual environment ready"
 echo ""
 
 source .venv/bin/activate
-pip install --upgrade pip -q
+python -m ensurepip --upgrade
+python -m pip install --upgrade pip -q
 
 # ============================================
 # Step 3: Install Dependencies
 # ============================================
-echo "[3/4] Installing OCRmyPDF-AIH..."
+echo "[3/4] Installing AIH-OCRmyPDF..."
 
-pip install -e . -q
+python -m pip install -e . -c requirements-lock.txt -q
 echo "[OK] Dependencies installed"
 echo ""
 
@@ -264,6 +265,13 @@ else
         echo "[Warning] Ghostscript install did not become available in this shell."
     fi
 fi
+
+# Optional: PaddleOCR. Not installed by default (Chrome ScreenAI is the main engine).
+# The helper detects the GPU / CUDA driver, recommends a CPU or GPU build, asks first,
+# and installs into a separate .venv-paddle. Set AIH_INSTALL_PADDLE=auto|cpu|gpu|skip
+# to answer without a prompt.
+python scripts/install_paddle.py || \
+    echo "[Warning] Optional PaddleOCR step did not complete. Core install is fine."
 
 echo ""
 echo "============================================================"

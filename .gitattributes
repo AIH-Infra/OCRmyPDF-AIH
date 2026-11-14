@@ -4,6 +4,9 @@
 # Always use Unix convention for new lines
 * text eol=lf
 
+# Windows batch files need CRLF (LF-only breaks goto/call :label)
+*.bat text eol=crlf
+
 # These files are binary and should be left untouched
 # (binary is a macro for -text -diff)
 *.jar	binary

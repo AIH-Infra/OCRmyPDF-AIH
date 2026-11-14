@@ -273,8 +273,11 @@ def check_pdf(input_file: Path) -> bool:
                 elif (
                     "/DecodeParms: operation for dictionary attempted on object "
                     "of type null" in msg
+                    or "input stream is complete but output may still be valid" in msg
                 ):
-                    pass  # Ignore/spurious warning
+                    log.debug(msg)
+                elif msg.strip().startswith("WARNING:"):
+                    log.warning(msg)
                 else:
                     log.warning(msg)
                     success = False

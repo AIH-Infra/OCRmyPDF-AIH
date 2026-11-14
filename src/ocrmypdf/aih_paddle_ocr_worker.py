@@ -82,6 +82,25 @@ def _run_paddle_ocr(job: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _resolve_paddle_device(device: str) -> str:
+    """Fall back to CPU when a GPU device is requested but Paddle has no CUDA.
+
+    The optional ``paddle`` extra installs the CPU build of PaddlePaddle, while the
+    defaults historically assume ``gpu:0``.
+    """
+    if not device or not device.lower().startswith(("gpu", "cuda")):
+        return device
+    try:
+        import paddle
+
+        if paddle.device.is_compiled_with_cuda():
+            return device
+    except Exception:  # pragma: no cover - depends on local optional install
+        return device
+    print(f"PaddlePaddle has no CUDA support; using CPU instead of {device!r}", file=sys.stderr)
+    return "cpu"
+
+
 @lru_cache(maxsize=4)
 def _get_paddle_ocr_model(
     *,
@@ -120,7 +139,7 @@ def _get_paddle_ocr_model(
     if rec_batch_size:
         kwargs["text_recognition_batch_size"] = rec_batch_size
     if device and device.lower() != "auto":
-        kwargs["device"] = device
+        kwargs["device"] = _resolve_paddle_device(device)
     if engine:
         kwargs["engine"] = engine
     if enable_mkldnn is not None:

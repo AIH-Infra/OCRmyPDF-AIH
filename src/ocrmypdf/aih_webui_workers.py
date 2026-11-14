@@ -92,7 +92,8 @@ def ocr_one_file_worker(
                 msg = f"{fname}：PDF/A 转换失败，输出可能不符合标准 (耗时: {elapsed_str})"
             payload["log"] = ("warning", fname, msg)
         elif result == ocrmypdf.ExitCode.already_done_ocr:
-            payload["log"] = ("info", fname, f"{fname}：已包含文字层，跳过 (耗时: {elapsed_str})")
+            payload["error"] = (fname, "页面已有文字")
+            payload["log"] = ("warning", fname, f"{fname}：已包含文字层，未处理；请勾选“OCR 前先移除旧的隐形文字层”，或改用“跳过 / 强制”模式 (耗时: {elapsed_str})")
         elif result == ocrmypdf.ExitCode.encrypted_pdf:
             payload["error"] = (fname, "PDF 已加密")
             payload["log"] = ("error", fname, f"{fname}：PDF 已加密，请先解密 (耗时: {elapsed_str})")
@@ -187,7 +188,8 @@ def ocr_one_file_path_worker(
             payload["log"] = ("warning", fname, msg)
         elif result == ocrmypdf.ExitCode.already_done_ocr:
             payload["output_path"] = None
-            payload["log"] = ("info", fname, f"{fname}：已包含文字层，跳过 (耗时: {elapsed_str})")
+            payload["error"] = (fname, "页面已有文字")
+            payload["log"] = ("warning", fname, f"{fname}：已包含文字层，未处理；请勾选“OCR 前先移除旧的隐形文字层”，或改用“跳过 / 强制”模式 (耗时: {elapsed_str})")
         elif result == ocrmypdf.ExitCode.encrypted_pdf:
             payload["output_path"] = None
             payload["error"] = (fname, "PDF 已加密")

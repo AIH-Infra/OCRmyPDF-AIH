@@ -1,14 +1,14 @@
 # SPDX-FileCopyrightText: 2022 James R. Barlow
-# SPDX-FileCopyrightText: 2025 Baireinhold / OCRmyPDF-AIH
+# SPDX-FileCopyrightText: 2025 Baireinhold / AIH-OCRmyPDF
 # SPDX-License-Identifier: MPL-2.0
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ocrmypdf-aih-infra"
-version = "0.7.0"
-description = "OCRmyPDF-AIH — batch PDF OCR pipeline with Tesseract/Calamari backends, based on OCRmyPDF"
+name = "aih-ocrmypdf"
+version = "0.9.0"
+description = "AIH-OCRmyPDF — batch PDF OCR pipeline with Tesseract/Calamari backends, based on OCRmyPDF"
 readme = "README.md"
 license = "MPL-2.0"
 requires-python = ">=3.11,<3.14"
@@ -56,23 +56,44 @@ classifiers = [
 keywords = ["PDF", "OCR", "optical character recognition", "PDF/A", "scanning"]
 
 [project.urls]
-Source = "https://github.com/AIH-Infra/OCRmyPDF-AIH"
 Upstream = "https://github.com/ocrmypdf/OCRmyPDF"
 
 [project.optional-dependencies]
-# User-installable features - use `uv sync --extra <name>` or `pip install ocrmypdf[name]`
+# User-installable features - use `uv sync --extra <name>` or `pip install aih-ocrmypdf[name]`
 watcher = ["watchdog>=1.0.2", "cyclopts>=3", "python-dotenv"]
+# Local PaddleOCR backend (--ocr-engine paddle_ocr, paddle_det line detection).
+# Not installed by default. This is the CPU build of PaddlePaddle from PyPI; for a
+# CUDA build install `paddlepaddle-gpu` from Paddle's own package index instead
+# (PyPI only carries an old 2.6.x GPU wheel), then run with --paddle-ocr-device gpu:0.
+paddle = ["paddleocr>=3.7,<3.8", "paddlepaddle>=3.3,<4"]
+# CUDA 13.0 build (needed by RTX 50-series / Blackwell). With uv the wheel comes from
+# Paddle's index (see [tool.uv.sources]); with plain pip add
+#   --extra-index-url https://www.paddlepaddle.org.cn/packages/stable/cu130/
+# Mutually exclusive with the `paddle` (CPU) extra.
+paddle-gpu = ["paddleocr>=3.7,<3.8", "paddlepaddle-gpu>=3.3,<4"]
+
+[[tool.uv.index]]
+name = "paddle-cu130"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cu130/"
+explicit = true
+
+[tool.uv.sources]
+paddlepaddle-gpu = { index = "paddle-cu130", extra = "paddle-gpu" }
+
+[tool.uv]
+conflicts = [[{ extra = "paddle" }, { extra = "paddle-gpu" }]]
 
 [project.scripts]
 ocrmypdf = "ocrmypdf.__main__:run"
-ocrmypdf-aih-webui = "ocrmypdf.webui_launcher:main"
+aih-ocrmypdf-webui = "ocrmypdf.webui_launcher:main"
+ocrmypdf-aih-webui = "ocrmypdf.webui_launcher:main"  # legacy alias
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/ocrmypdf"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"misc/logo.png" = "src/ocrmypdf/logo.png"
-"LICENSES/locro-MIT-LICENSE.txt" = "src/ocrmypdf/_vendor/locro/LICENSE.txt"
+"misc/logo.png" = "ocrmypdf/logo.png"
+"LICENSES/locro-MIT-LICENSE.txt" = "ocrmypdf/_vendor/locro/LICENSE.txt"
 
 [tool.distutils.bdist_wheel]
 python-tag = "py311"
@@ -105,7 +126,12 @@ exclude_lines = [
 minversion = "6.0"
 testpaths = ["tests"]
 addopts = "-n auto"
-markers = ["slow"]
+markers = [
+  "slow",
+  "tesseract: needs the tesseract executable",
+  "chrome: needs a local Chrome ScreenAI DLL and models",
+  "paddle: needs an installed PaddleOCR environment (CPU or GPU)",
+]
 filterwarnings = [
   "ignore:.*XMLParser.*:DeprecationWarning",
   "ignore:.*ast.NameConstant.*:DeprecationWarning:reportlab",
@@ -170,7 +196,13 @@ quote-style = "preserve"
 
 [dependency-groups]
 # Developer-only tools - use `uv sync --group <name>`
-dev = ["mypy>=1.13.0", "ipykernel>=6.29.5", "reportlab>=4.4.4"]
+dev = [
+  "mypy>=1.13.0",
+  "ipykernel>=6.29.5",
+  "reportlab>=4.4.4",
+  "pytest>=8",
+  "pytest-xdist>=3",
+]
 test = [
   # Core testing framework
   "coverage[toml]>=6.2",

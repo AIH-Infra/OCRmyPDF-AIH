@@ -85,11 +85,30 @@ def _detect_lines_paddle_det_inprocess(
     ]
 
 
+def _resolve_paddle_device(device: str) -> str:
+    """Fall back to CPU when a GPU device is requested but Paddle has no CUDA.
+
+    The optional ``paddle`` extra installs the CPU build of PaddlePaddle, while the
+    defaults historically assume ``gpu:0``.
+    """
+    if not device or not device.lower().startswith(("gpu", "cuda")):
+        return device
+    try:
+        import paddle
+
+        if paddle.device.is_compiled_with_cuda():
+            return device
+    except Exception:  # pragma: no cover - depends on local optional install
+        return device
+    print(f"PaddlePaddle has no CUDA support; using CPU instead of {device!r}", file=sys.stderr)
+    return "cpu"
+
+
 @lru_cache(maxsize=4)
 def _get_paddle_text_detector(model_name: str, model_dir: str, device: str):
     from paddleocr import TextDetection
 
-    kwargs = {"model_name": model_name, "device": device}
+    kwargs = {"model_name": model_name, "device": _resolve_paddle_device(device)}
     if model_dir:
         kwargs["model_dir"] = model_dir
     try:

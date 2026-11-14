@@ -1,7 +1,7 @@
 version = 1
-SPDX-PackageName = "OCRmyPDF"
-SPDX-PackageSupplier = "James R. Barlow <james@purplerock.ca>"
-SPDX-PackageDownloadLocation = "https://github.com/ocrmypdf/OCRmyPDF"
+SPDX-PackageName = "AIH-OCRmyPDF"
+SPDX-PackageSupplier = "AIH-Infra"
+SPDX-PackageDownloadLocation = "NOASSERTION"
 
 [[annotations]]
 path = ["docs/**", 'misc/screencast/**']

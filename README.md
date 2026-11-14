@@ -1,253 +1,89 @@
 <!-- SPDX-FileCopyrightText: 2025 Baireinhold / AIH-Infra -->
 <!-- SPDX-License-Identifier: MPL-2.0 -->
 
-# OCRmyPDF-AIH 0.7.0
+# AIH-OCRmyPDF 0.9.0 · 历史版本
 
-批量 PDF OCR 处理管线，支持 Tesseract、PaddleOCR、Calamari 和 Chrome ScreenAI 后端，并提供 Streamlit Web UI。
+AIH-OCR 的 0.9 系列源码整理版，基于 OCRmyPDF，提供 PDF OCR 和 Streamlit 批量处理界面。安装包名保留 `aih-ocrmypdf`，Python 模块名为 `ocrmypdf`。
 
-[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
-[![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-brightgreen.svg)](https://opensource.org/licenses/MPL-2.0)
+本次整理保留 0.9 的界面、配置和识别逻辑，修正安装入口、包内资源及 ScreenAI 写入版本信息时重复初始化的问题。当前版本为同批发布的 AIH-OCR 1.0；两个版本分别安装到各自的虚拟环境。
 
----
+## 功能
 
-## 项目定位
+- Tesseract、PaddleOCR、Calamari、Chrome ScreenAI，以及 PDF 转换。
+- 侧边栏配置、批量上传、文件与页段并行、下载及磁盘输出。
+- 输出目录、文件名后缀及自动保存选项自动记忆。
+- OCR 前移除符合条件的隐藏文字层，保留可见文字及原文件。
 
-OCRmyPDF-AIH 是 [AIH-Infra](https://github.com/AIH-Infra) 的 OCR 处理组件，基于 [OCRmyPDF](https://github.com/ocrmypdf/OCRmyPDF) 构建，用于为扫描版 PDF 添加可搜索文字层，并提供适合批量处理的 Web UI。
+## 环境与后端
 
-项目目标是以尽量低的使用门槛提供可用的批量 OCR 服务；仓库附带安装脚本和启动脚本，但不承诺所有系统环境下零配置完成系统依赖安装。
+- Python 3.11–3.13；Windows 10/11、macOS 或 Linux。
+- Tesseract 与 Ghostscript 为外部系统依赖，安装脚本检查并显示缺失项。Windows 自动安装使用 winget，macOS 使用 Homebrew，Ubuntu/Debian 使用 apt。
+- CLI 默认使用 Tesseract；历史 Web UI 初始选择 Chrome ScreenAI。未准备 ScreenAI 组件时，在侧边栏选择 Tesseract。
+- ScreenAI 库和模型需由使用者从其提供方获取；源码目录不分发这些文件。可在 Chrome 的 `chrome://components` 检查 Screen AI 组件。Linux 首次加载组件需要 `cc` 编译器。
+- PaddleOCR 为可选后端。安装器按设备给出 CPU/GPU 方案，询问后安装到独立 `.venv-paddle`；主环境不默认安装 Paddle。也可运行 `python scripts/install_paddle.py`；`--dry-run` 显示方案，`--mode cpu|gpu|auto|skip` 指定操作。
+- Calamari 需先在本机自行部署并启动服务，再在侧边栏配置其地址和模型。
 
-```text
-┌─────────────────────────────────────────────────┐
-│  应用层                                          │
-│  RAG / 检索 / 结构化文献处理                     │
-├─────────────────────────────────────────────────┤
-│  OCR 层：OCRmyPDF-AIH  ← 本项目                 │
-│  Tesseract · Calamari · 批量处理 · Web UI        │
-├─────────────────────────────────────────────────┤
-│  基础层：PDF 解析                                │
-│  Ghostscript · pdfminer · pypdfium2             │
-└─────────────────────────────────────────────────┘
-```
+## 安装与启动
 
-## 相比上游 OCRmyPDF 的增强
+解压源码后进入 `AIH-OCR-0.9`，运行目录内的脚本。
 
-| 特性 | OCRmyPDF | OCRmyPDF-AIH |
-|------|----------|---------------|
-| OCR 后端 | Tesseract | Tesseract + PaddleOCR + Calamari + Chrome ScreenAI（可选） |
-| 使用方式 | CLI | CLI + Streamlit Web UI |
-| 批量处理 | 逐文件命令行 | Web UI 多文件批量处理 |
-| 进度显示 | 文件级 | 页面级进度反馈 |
-| 参数配置 | CLI 参数 | 可视化面板 |
-| 输出模式 | CLI 手动指定 | UI 中可选普通 PDF / 尽量 PDF/A / 严格 PDF/A |
+**Windows**：先双击 `install.bat`，完成后双击 `start.bat`（或 `启动.bat`）。
 
-## 环境要求
-
-- Python 3.11 / 3.12 / 3.13
-- Windows 10/11、macOS 或 Linux
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract)
-- [Ghostscript](https://www.ghostscript.com/)
-
-说明：
-- Tesseract 是默认后端。
-- Calamari 不是内置依赖，而是可选的外部 HTTP 服务。
-- Chrome ScreenAI 已集成 vendored `locro` 适配代码；运行时仍需要本机可用的 Chrome ScreenAI DLL 与模型组件。
-- Web UI 上传内容和临时输出采用任务级磁盘缓存；任务完成后释放输入缓存，清除结果时释放下载缓存。
-- Chrome ScreenAI 单书页内并行默认使用 8 个独立 worker，最高 16 个。
-- Web UI 默认监听 `0.0.0.0:8501`，也就是本机所有网口；本机浏览器默认打开 `http://localhost:8501`。若端口被占用或在 Windows 上命中系统保留端口，会自动递增到下一个可用端口。
-- Streamlit 通常会自动打开默认浏览器；若未自动打开，请以终端输出的最终 URL 为准。
-- 仓库提供跨平台安装脚本，但系统依赖的自动安装属于 best effort：Windows 依赖 `winget`，macOS 依赖 Homebrew，Linux 安装脚本优先支持 `apt`（Ubuntu / Debian）。
-- 安装目标是稳定安装 Tesseract 主程序、Ghostscript 和常用 Tesseract 语言包，并清楚提示缺失语言包；不承诺自动安装所有 Tesseract 语言包。
-- 常用语言包包括：`eng`、`chi_sim`、`chi_tra`、`deu`、`fra`、`jpn`、`kor`、`lat`。
-- 如果自动安装系统依赖失败，请按脚本提示手动安装 Tesseract / Ghostscript 后重新运行启动脚本。
-
-## 批处理规模说明
-
-- Web UI 适合交互式处理单本大书或几十个文件。
-- 大批量任务应优先使用磁盘输出，避免在浏览器中生成大体积 ZIP。
-- Chrome ScreenAI 的单书页内并行与多书并行是互斥策略，避免形成并发乘法。
-- 上千文件的长期无人值守任务建议由外部任务队列或 AIH OCR MCP 调度；本版本不宣称提供断点续跑式作业管理。
-
-## 使用方式一：克隆源码后直接运行
-
-适合本地开发、调试和直接使用仓库内脚本。
-
-### 1. 克隆仓库
+**macOS / Linux**：
 
 ```bash
-git clone https://github.com/AIH-Infra/OCRmyPDF-AIH.git
-cd OCRmyPDF-AIH
-```
-
-### 2. 运行安装脚本
-
-**Windows**
-
-双击 `install.bat`
-
-**macOS**
-
-```bash
-chmod +x install.command start.command install.sh start.sh
+chmod +x install.sh start.sh install.command start.command
 ./install.sh
-```
-
-**Linux**
-
-```bash
-chmod +x install.sh start.sh
-./install.sh
-```
-
-安装脚本会：
-- 检查 Python 版本
-- 创建 `.venv`
-- 执行 `pip install -e .`
-- 检测 Tesseract / Ghostscript
-- 在支持的平台上尝试自动安装系统依赖
-- 安装后再次验证当前终端是否可以调用 Tesseract / Ghostscript
-- 检查常用 Tesseract 语言包是否可用，并提示缺失项
-
-说明：
-- Windows 自动安装依赖 `winget`；脚本会检测全局 `tesseract.exe`，并在发现常见安装目录时临时加入当前会话 PATH
-- Windows 若缺少常用 Tesseract 语言包，脚本会尝试下载到项目本地 `.tessdata` 目录，启动脚本会自动设置 `TESSDATA_PREFIX`
-- macOS 自动安装依赖 Homebrew
-- Linux 安装脚本优先支持 `apt`（Ubuntu / Debian）
-- 其他 Linux 发行版通常需要手动安装系统依赖
-- 脚本不会默认永久修改系统 PATH；Windows 安装器可能会写入系统 PATH，但通常需要打开新终端后生效
-
-### 3. 启动 Web UI
-
-**Windows**
-
-双击 `start.bat`
-
-**macOS / Linux**
-
-```bash
 ./start.sh
 ```
 
-启动脚本会自动打开默认浏览器。
-
-如果没有自动打开，请查看终端输出的最终 URL 并手动访问。
-
-## 使用方式二：作为 Python 包安装
-
-适合已有 Python 环境、希望不依赖仓库脚本直接启动的场景。
-
-### 1. 安装项目
-
-从源码目录安装：
+安装器创建 `.venv`，按 `requirements-lock.txt` 安装主环境依赖，再检查系统依赖和可选 Paddle。手动安装可使用：
 
 ```bash
-pip install .
+python -m venv .venv
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
+python -m pip install -e . -c requirements-lock.txt
+aih-ocrmypdf-webui
 ```
 
-开发模式安装：
+CLI 示例：
 
 ```bash
-pip install -e .
+ocrmypdf --ocr-engine tesseract --output-type pdf -l eng input.pdf output.pdf
+ocrmypdf --ocr-engine chrome_screenai --output-type pdf -l eng input.pdf output.pdf
 ```
 
-### 2. 启动命令
+Web UI 默认监听所有本机网口，起始端口 8501；端口不可用时递增。本机访问终端显示的 URL。环境变量 `OCRMYPDF_AIH_HOST`、`OCRMYPDF_AIH_BROWSER_HOST`、`OCRMYPDF_AIH_PORT` 可设置监听地址、浏览器地址和起始端口。
 
-OCRmyPDF CLI：
+## 0.9 的处理边界
+
+- 隐藏文字层清理采用旧规则。没有图片背景或删除会影响可见文字位置时，会保留相关文字并报告。`--hidden-text-layer keep` 保留旧层；`--skip-text` 跳过已有文字页。
+- 0.9 不包含 1.0 的 PDF 对象净化、批注清除和原生文字写回重叠去重。对已有 OCR 层的文档做完整重处理，使用 1.0。
+- 0.9 原生 ScreenAI 输出普通 PDF；请求 PDF/A 时该路径会改为普通 PDF。PDF/A 输出使用 Tesseract，或使用 1.0 的标准转换流程。
+- 批处理结束会清理上传输入缓存；历史界面没有 1.0 的失败输入保留与重试闭环。原始文档应保留在用户自己的目录。
+- PaddleOCR 不执行方向分类；旋转页面需先校正。
+
+## 与 1.0 的版本区别
+
+| 项目 | 0.9 历史版 | 1.0 |
+|---|---|---|
+| 安装包 / Web UI 命令 | aih-ocrmypdf / aih-ocrmypdf-webui | aih-ocr / aih-ocr-webui |
+| 界面 | 历史侧边栏 | 工作区及四类处理配置 |
+| 配置保存 | 输出位置与命名自动记忆 | 保存按钮持久保存配置 |
+| 性能 | 手动并行参数 | 低/中/高及高级自定义，默认中档 |
+| ScreenAI 净化与去重 | 旧去层规则 | 对象净化、已有正文覆盖检查、同位置重复词去重 |
+
+## 许可证与第三方
+
+项目主体采用 MPL-2.0，各文件以原 SPDX 标记为准，第三方文件保留其许可证。许可证文本位于 `LICENSES/`，元数据见 `REUSE.toml`，locro 声明见 [第三方声明](docs/third_party_locro.md)。ScreenAI 库及模型适用其提供方的独立条款。
+
+基于 [OCRmyPDF](https://github.com/ocrmypdf/OCRmyPDF)，并集成 Tesseract、PaddleOCR、Calamari 和 locro 适配代码。上游使用手册见 [OCRmyPDF 官方文档](https://ocrmypdf.readthedocs.io/en/latest/)。
+
+## 测试
 
 ```bash
-ocrmypdf input.pdf output.pdf
+uv run --group test pytest
 ```
 
-Web UI：
-
-```bash
-ocrmypdf-aih-webui
-```
-
-如需修改监听地址或起始尝试端口，可设置环境变量：
-
-```bash
-OCRMYPDF_AIH_HOST=0.0.0.0
-OCRMYPDF_AIH_BROWSER_HOST=localhost
-OCRMYPDF_AIH_PORT=8501
-ocrmypdf-aih-webui
-```
-
-其中：
-- `OCRMYPDF_AIH_HOST`：监听地址，默认 `0.0.0.0`
-- `OCRMYPDF_AIH_BROWSER_HOST`：本机默认打开的浏览器地址，默认 `localhost`
-- `OCRMYPDF_AIH_PORT`：起始尝试端口，默认 `8501`；如果该端口不可用，程序会自动继续尝试更高端口
-
-## Web UI 说明
-
-Web UI 提供：
-- 多文件批量上传
-- Tesseract / Calamari 后端切换
-- OCR 模式、图像预处理等参数配置
-- 输出模式选择：
-  - 普通 PDF
-  - 尽量 PDF/A（失败则回退普通 PDF）
-  - 严格 PDF/A
-
-默认推荐使用普通 PDF，以降低因特殊颜色空间导致的 PDF/A 转换失败概率。
-
-## Calamari 后端
-
-如果你部署了 Calamari HTTP 服务，可在 Web UI 中切换到 Calamari 后端并填写服务地址。
-
-说明：
-- Calamari 是可选增强路径，不配置时仍可正常使用 Tesseract。
-- 项目不会在安装阶段自动部署 Calamari 服务。
-- 如需高精度历史文献识别，可将 Calamari 作为远程 OCR 服务接入。
-
-## CLI 示例
-
-CLI 与上游 OCRmyPDF 基本兼容：
-
-```bash
-ocrmypdf -l chi_sim+eng --deskew input.pdf output.pdf
-```
-
-如果遇到特殊颜色空间 PDF 无法生成 PDF/A，可显式输出普通 PDF：
-
-```bash
-ocrmypdf --output-type pdf input.pdf output.pdf
-```
-
-## 项目结构说明
-
-当前公开副本已将 Web UI 运行时代码纳入正式包结构，避免依赖仓库中的临时脚本路径：
-
-- `src/ocrmypdf/webui.py`：Web UI 主程序
-- `src/ocrmypdf/webui_launcher.py`：Web UI 启动入口
-- `src/ocrmypdf/aih_calamari_plugin.py`：Calamari 插件
-- `src/ocrmypdf/aih_progress_plugin.py`：进度插件
-
-因此：
-- `pip install .` 后可以直接运行 `ocrmypdf-aih-webui`
-- Web UI 的启动、端口选择和浏览器打开逻辑都已收口到正式包入口
-
-## 上游功能保留
-
-OCRmyPDF-AIH 保留了 OCRmyPDF 的核心能力，包括：
-
-- 可搜索 PDF 输出
-- 旋转校正、倾斜校正、图像清理
-- 多核并行处理
-- OCR 层注入
-- 插件系统
-
-更多 CLI 文档可参考 [OCRmyPDF 官方文档](https://ocrmypdf.readthedocs.io/en/latest/)。
-
-## 许可证
-
-本项目基于 **Mozilla Public License 2.0 (MPL-2.0)** 发布，与上游 OCRmyPDF 保持一致。
-
-## 致谢
-
-- [OCRmyPDF](https://github.com/ocrmypdf/OCRmyPDF) — James R. Barlow 及贡献者
-- [Tesseract OCR](https://github.com/tesseract-ocr/tesseract)
-- [Calamari OCR](https://github.com/Calamari-OCR/calamari)
-
-## 作者
-
-**Güriedrich & Baireinhold** — [AIH-Infra](https://github.com/AIH-Infra)
+外部 OCR 引擎不可用时，相应端到端检查自动跳过。

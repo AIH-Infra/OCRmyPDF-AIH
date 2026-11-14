@@ -44,7 +44,7 @@ def detect_lines_paddle_det(
 ) -> list[LineBox]:
     """Detect text lines with PaddleOCR TextDetection.
 
-    Prefer an external PaddleOCR venv when available. This keeps OCRmyPDF-AIH's
+    Prefer an external PaddleOCR venv when available. This keeps AIH-OCRmyPDF's
     own environment clean while letting the detector use the already-installed
     Paddle GPU stack and cached PP-OCRv5 model.
     """
@@ -114,6 +114,7 @@ def _discover_paddle_env_cached(
             explicit_src,
             env_src,
             _DEFAULT_PADDLE_SOURCE_DIR,
+            *_project_paddle_roots(),
             *_nearby_paddle_source_dirs(),
         ]
     )
@@ -170,6 +171,20 @@ def _unique_paths(paths: list[Path | None]) -> list[Path]:
         seen.add(key)
         result.append(path.expanduser())
     return result
+
+
+def _project_paddle_roots() -> list[Path]:
+    """Project folders holding the PaddleOCR venv made by scripts/install_paddle.py.
+
+    The installer creates ``.venv-paddle`` next to ``pyproject.toml`` so that the
+    optional Paddle stack never touches the main environment.
+    """
+    roots = [Path(__file__).resolve().parents[2], Path.cwd()]
+    return [
+        root
+        for root in _unique_paths(roots)
+        if any((root / name).is_dir() for name in (".venv-paddle", ".venv-paddle-gpu", ".venv-paddle-cpu"))
+    ]
 
 
 def _nearby_paddle_source_dirs() -> list[Path]:
@@ -380,6 +395,25 @@ def _detect_lines_paddle_det_inprocess(
     ]
 
 
+def _resolve_paddle_device(device: str) -> str:
+    """Fall back to CPU when a GPU device is requested but Paddle has no CUDA.
+
+    The optional ``paddle`` extra installs the CPU build of PaddlePaddle, while the
+    defaults historically assume ``gpu:0``.
+    """
+    if not device or not device.lower().startswith(("gpu", "cuda")):
+        return device
+    try:
+        import paddle
+
+        if paddle.device.is_compiled_with_cuda():
+            return device
+    except Exception:  # pragma: no cover - depends on local optional install
+        return device
+    print(f"PaddlePaddle has no CUDA support; using CPU instead of {device!r}", file=sys.stderr)
+    return "cpu"
+
+
 @lru_cache(maxsize=4)
 def _get_paddle_text_detector(model_name: str, model_dir: str, device: str):
     try:
@@ -390,7 +424,7 @@ def _get_paddle_text_detector(model_name: str, model_dir: str, device: str):
             "Install paddlepaddle and paddleocr or configure an external PaddleOCR venv."
         ) from exc
 
-    kwargs = {"model_name": model_name, "device": device}
+    kwargs = {"model_name": model_name, "device": _resolve_paddle_device(device)}
     if model_dir:
         kwargs["model_dir"] = model_dir
     try:

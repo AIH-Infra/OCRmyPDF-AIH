@@ -224,7 +224,8 @@ def _run_chrome_screenai_native_pdf(
                 strip_report.form_xobjects_skipped,
             )
 
-    workers = max(1, min(16, int(options.jobs or 4)))
+    # Same policy as the Web UI: default 8 page workers, at most 24 (set with -j).
+    workers = max(1, min(24, int(options.jobs or 8)))
     log.info("Chrome ScreenAI native PDF path using %d page worker(s)", workers)
     backend = ChromeScreenAIBackend(
         light_mode=bool(extra.get("chrome_screenai_light", False)),
@@ -250,6 +251,58 @@ def _run_chrome_screenai_native_pdf(
     return report_output_pdf(options, start_input_file, [])
 
 
+def _strip_hidden_text_before_ocr(
+    options: OcrOptions, work_folder: Path, origin_pdf: Path
+) -> Path:
+    """Drop a previous OCR's invisible text layer so the pages are OCRed again.
+
+    Default behaviour (``--hidden-text-layer strip``). Only hidden text on pages that
+    have an image behind it is removed, visible text is never touched, and the input
+    file is not modified. Use ``--hidden-text-layer keep`` for upstream behaviour
+    (``--skip-text`` / ``--redo-ocr`` / exit code 6 on already-OCRed input).
+    """
+    extra = getattr(options, "extra_attrs", {}) or {}
+    policy = str(extra.get("hidden_text_layer") or "strip").lower()
+    if policy == "keep" or options.ocr_engine == "none":
+        return origin_pdf
+    if options.mode not in (ProcessingMode.default, ProcessingMode.redo):
+        return origin_pdf  # skip: user wants existing text pages left alone; force: rasterizes
+
+    requested = options.pages
+    if isinstance(requested, str):
+        requested = _pages_from_ranges(requested)
+    pages = sorted(n + 1 for n in requested) if requested else None
+
+    stripped = work_folder / "hidden_text_stripped_input.pdf"
+    try:
+        report = strip_hidden_text_layer(origin_pdf, stripped, pages=pages)
+    except Exception as exc:  # never block OCR on this optimisation
+        log.warning("Could not check for a hidden text layer (%s); continuing", exc)
+        return origin_pdf
+
+    if report.pages_skipped_no_image:
+        log.warning(
+            "Kept hidden text on page(s) %s: there is no image behind it, "
+            "so removing it would blank the page",
+            report.pages_skipped_no_image[:20],
+        )
+    if report.pages_skipped_shift_risk:
+        log.warning(
+            "Kept hidden text on page(s) %s: removing it would shift visible text",
+            report.pages_skipped_shift_risk[:20],
+        )
+    if not report.pages_changed:
+        return origin_pdf
+    log.info(
+        "Removed the hidden text layer on %d page(s); they will be OCRed again",
+        len(report.pages_changed),
+    )
+    if report.visible_text_preserved is False:
+        log.warning("Visible text changed while removing the hidden layer; using original")
+        return origin_pdf
+    return stripped
+
+
 def _run_pipeline(
     options: OcrOptions,
     plugin_manager: OcrmypdfPluginManager,
@@ -272,6 +325,7 @@ def _run_pipeline(
         )
 
         extra_attrs = getattr(options, "extra_attrs", {})
+        origin_pdf = _strip_hidden_text_before_ocr(options, work_folder, origin_pdf)
         chrome_cleanup = str(
             extra_attrs.get("chrome_screenai_text_cleanup", "mode_default")
             or "mode_default"

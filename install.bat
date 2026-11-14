@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 echo.
 echo ============================================================
-echo    OCRmyPDF-AIH Environment Setup
+echo    AIH-OCRmyPDF Environment Setup
 echo    Batch PDF OCR Pipeline
 echo ============================================================
 echo.
@@ -79,13 +79,15 @@ echo [OK] Virtual environment ready
 echo.
 
 call .venv\Scripts\activate.bat
+python -m ensurepip --upgrade
+if errorlevel 1 exit /b 1
 python -m pip install --upgrade pip -q
 
 :: Step 3: Install Dependencies
-echo [3/4] Installing OCRmyPDF-AIH...
+echo [3/4] Installing AIH-OCRmyPDF...
 echo.
 
-pip install -e . -q
+python -m pip install -e . -c requirements-lock.txt -q
 if %errorlevel% neq 0 (
     echo [Error] Installation failed
     pause
@@ -105,6 +107,7 @@ set "GS_EXE="
 
 call :ensure_tesseract
 call :install_common_tesseract_languages
+call :seed_tessdata_support
 call :report_tesseract_languages
 call :ensure_ghostscript
 
@@ -246,6 +249,20 @@ for %%L in (!MISSING_LANGS!) do (
 )
 goto :eof
 
+:seed_tessdata_support
+:: .tessdata is used as TESSDATA_PREFIX by start.bat. Tesseract also looks there for its
+:: configs\ folder (hocr, txt, pdf...) and osd.traineddata, so copy them from the system
+:: installation. Without them OCR fails with "read_params_file: Can't open hocr".
+if not defined TESS_EXE goto :eof
+for %%I in ("!TESS_EXE!") do set "TESS_HOME=%%~dpI"
+set "SYS_TESSDATA=!TESS_HOME!tessdata"
+if not exist "!SYS_TESSDATA!\configs" goto :eof
+if not exist "!PROJECT_TESSDATA!\configs" xcopy /e /i /y "!SYS_TESSDATA!\configs" "!PROJECT_TESSDATA!\configs" >nul
+if not exist "!PROJECT_TESSDATA!\tessconfigs" if exist "!SYS_TESSDATA!\tessconfigs" xcopy /e /i /y "!SYS_TESSDATA!\tessconfigs" "!PROJECT_TESSDATA!\tessconfigs" >nul
+if not exist "!PROJECT_TESSDATA!\osd.traineddata" if exist "!SYS_TESSDATA!\osd.traineddata" copy /y "!SYS_TESSDATA!\osd.traineddata" "!PROJECT_TESSDATA!\osd.traineddata" >nul
+if not exist "!PROJECT_TESSDATA!\pdf.ttf" if exist "!SYS_TESSDATA!\pdf.ttf" copy /y "!SYS_TESSDATA!\pdf.ttf" "!PROJECT_TESSDATA!\pdf.ttf" >nul
+goto :eof
+
 :report_tesseract_languages
 if not defined TESS_EXE goto :eof
 call :collect_tesseract_languages
@@ -296,6 +313,13 @@ for /f "tokens=2,*" %%A in ('reg query "HKLM\SOFTWARE\GPL Ghostscript" /s /v GS_
 goto :eof
 
 :after_dependency_checks
+
+:: Optional: PaddleOCR. Not installed by default (Chrome ScreenAI is the main engine).
+:: The helper detects the GPU / CUDA driver, recommends a CPU or GPU build, asks first,
+:: and installs into a separate .venv-paddle. Set AIH_INSTALL_PADDLE=auto|cpu|gpu|skip
+:: to answer without a prompt.
+python scripts\install_paddle.py
+if errorlevel 1 echo [Warning] Optional PaddleOCR step did not complete. Core install is fine.
 
 echo.
 echo ============================================================

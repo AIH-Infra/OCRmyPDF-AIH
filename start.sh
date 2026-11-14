@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# OCRmyPDF-AIH Start Script (macOS/Linux)
+# AIH-OCRmyPDF Start Script (macOS/Linux)
 
 cd "$(dirname "$0")"
 
@@ -9,7 +9,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 echo ""
 echo "=========================================="
-echo "  OCRmyPDF-AIH Starting..."
+echo "  AIH-OCRmyPDF Starting..."
 echo "  Batch PDF OCR Pipeline"
 echo "=========================================="
 echo ""
@@ -30,4 +30,4 @@ echo "If 8501 is unavailable or reserved, the app will try the next port."
 echo "Press Ctrl+C to stop"
 echo ""
 
-ocrmypdf-aih-webui
+python -m ocrmypdf.webui_launcher

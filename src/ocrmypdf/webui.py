@@ -10,6 +10,7 @@ import base64
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -27,7 +28,9 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 
 import pikepdf
 import streamlit as st
+import streamlit.components.v1 as components
 
+from ocrmypdf import aih_webui_upload_server as _upload_server
 from ocrmypdf.aih_file_lock import file_job_lock
 
 # 禁用 Streamlit 日志（主进程和子进程）
@@ -36,11 +39,13 @@ for logger_name in ['streamlit', 'streamlit.runtime', 'streamlit.runtime.scriptr
     logging.getLogger(logger_name).setLevel(logging.CRITICAL)
 logging.getLogger('streamlit.runtime').setLevel(logging.ERROR)
 
-_CONFIG_PATH = Path.home() / ".ocrmypdf-aih-webui.json"
+_CONFIG_PATH = Path(os.environ.get("AIH_OCRMYPDF_CONFIG") or Path.home() / ".aih-ocrmypdf-webui.json")
+_LEGACY_CONFIG_PATH = Path.home() / ".ocrmypdf-aih-webui.json"  # pre-rename settings
 
 def _load_config() -> dict:
     try:
-        return json.loads(_CONFIG_PATH.read_text("utf-8")) if _CONFIG_PATH.exists() else {}
+        path = _CONFIG_PATH if _CONFIG_PATH.exists() else _LEGACY_CONFIG_PATH
+        return json.loads(path.read_text("utf-8")) if path.exists() else {}
     except Exception:
         return {}
 
@@ -69,7 +74,7 @@ except Exception:
 # ---------------------------------------------------------------------------
 _favicon = Path(__file__).parent / "logo.png"
 st.set_page_config(
-    page_title="OCRmyPDF-AIH Infra",
+    page_title="AIH-OCRmyPDF",
     page_icon=str(_favicon) if _favicon.exists() else "\U0001F4D6",
     layout="wide",
 )
@@ -161,7 +166,6 @@ if "ocr" not in st.session_state:
         "page_total": 0,
         "page_desc": "",
         "task_dir": "",
-        "upload_generation": 0,
     }
 # 取出引用，后台线程直接操作这个 dict
 _ocr_state: dict = st.session_state.ocr
@@ -377,34 +381,41 @@ def _log(state: dict, level: str, fname: str, msg: str):
     state["logs"].append({"type": level, "file": fname, "msg": msg})
 
 
+# ---------------------------------------------------------------------------
+# 磁盘暂存缓存：实现集中在 aih_webui_upload_server（Web UI 线程与旁路上传
+# 线程共享同一把 manifest 锁、原子落盘），这里只留薄封装供界面与后台线程调用。
+# ---------------------------------------------------------------------------
 def _cleanup_task_dir(state: dict):
-    """Remove disk-backed upload/output caches owned by the current UI task."""
-    task_dir = state.get("task_dir")
-    if task_dir:
-        shutil.rmtree(task_dir, ignore_errors=True)
-    state["task_dir"] = ""
+    """删除当前任务拥有的整个磁盘暂存批次（inputs/outputs/manifest）。"""
+    _upload_server.cleanup_batch(state)
 
 
-def _create_task_dir(state: dict) -> Path:
-    _cleanup_task_dir(state)
-    task_dir = Path(tempfile.mkdtemp(prefix="ocrmypdf-aih-webui-"))
-    (task_dir / "inputs").mkdir()
-    (task_dir / "outputs").mkdir()
-    state["task_dir"] = str(task_dir)
-    return task_dir
+def _sweep_orphan_batches() -> None:
+    _upload_server.sweep_orphans()
 
 
-def _spool_uploads_to_disk(uploaded_files, task_dir: Path) -> list[tuple[str, str]]:
-    """Stream browser uploads to task storage without retaining duplicate byte arrays."""
-    files: list[tuple[str, str]] = []
-    for index, uploaded in enumerate(uploaded_files):
-        safe_name = Path(uploaded.name).name
-        input_path = task_dir / "inputs" / f"{index:06d}_{safe_name}"
-        uploaded.seek(0)
-        with input_path.open("wb") as target:
-            shutil.copyfileobj(uploaded, target, length=1024 * 1024)
-        files.append((uploaded.name, str(input_path)))
-    return files
+def _load_batch_manifest(batch_dir: Path) -> dict:
+    return _upload_server.load_manifest(Path(batch_dir))
+
+
+def _save_batch_manifest(batch_dir: Path, manifest: dict) -> None:
+    _upload_server.save_manifest(Path(batch_dir), manifest)
+
+
+def _get_batch_dir(state: dict, create: bool = False) -> Path | None:
+    return _upload_server.get_batch_dir(state, create)
+
+
+def _staged_files(state: dict) -> list[dict]:
+    return _upload_server.list_staged(state)
+
+
+def _remove_staged_files(state: dict, paths: set[str]) -> None:
+    _upload_server.remove_staged(state, paths)
+
+
+def _reset_batch_for_run(batch_dir: Path, staged: list[dict]) -> None:
+    _upload_server.mark_running(Path(batch_dir), staged)
 
 
 def _apply_ocr_worker_result(state: dict, payload: dict):
@@ -461,23 +472,33 @@ def _run_chrome_file_parallel_subprocess(
         env["PYTHONPATH"] = (
             src_dir if not existing_pythonpath else f"{src_dir}{os.pathsep}{existing_pythonpath}"
         )
-        proc = subprocess.Popen(
-            [sys.executable, "-m", "ocrmypdf.aih_webui_worker_cli", token],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            env=env,
-            cwd=str(Path(__file__).parents[1]),
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        # Files, not pipes: a pipe nobody drains blocks the worker once it fills up,
+        # and with stderr discarded a crashed worker left no error message at all.
+        out_file = tmp_path / "worker.stdout"
+        err_file = tmp_path / "worker.stderr"
+        out_fh = open(out_file, "wb")
+        err_fh = open(err_file, "wb")
+        try:
+            proc = subprocess.Popen(
+                [sys.executable, "-m", "ocrmypdf.aih_webui_worker_cli", token],
+                stdin=subprocess.DEVNULL,
+                stdout=out_fh,
+                stderr=err_fh,
+                env=env,
+                cwd=str(Path(__file__).parents[1]),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        finally:
+            out_fh.close()
+            err_fh.close()
         running.append({
             "index": index,
             "fname": fname,
             "out_name": out_name,
             "output_path": output_path,
             "proc": proc,
+            "out_file": out_file,
+            "err_file": err_file,
         })
         state["progress_text"] = f"Chrome ScreenAI 已启动 {index + 1}/{total}：{fname}"
 
@@ -497,7 +518,9 @@ def _run_chrome_file_parallel_subprocess(
                 if proc.poll() is None:
                     continue
 
-                stdout, stderr = proc.communicate()
+                stdout = item["out_file"].read_bytes().decode("utf-8", "replace")
+                stderr = item["err_file"].read_bytes().decode("utf-8", "replace")
+                stderr = "\n".join(stderr.strip().splitlines()[-8:])
                 payload = None
                 for line in reversed(stdout.splitlines()):
                     line = line.strip()
@@ -635,7 +658,13 @@ def _ocr_one_file(
                 suffix = f"，输出：{saved_path}" if saved_path else ""
                 _log(state, "warning", fname, f"{fname}：PDF/A 转换失败，输出可能不符合标准{suffix} (耗时: {elapsed_str})")
         elif result == ocrmypdf.ExitCode.already_done_ocr:
-            _log(state, "info", fname, f"{fname}：已包含文字层，跳过 (耗时: {elapsed_str})")
+            hint = (
+                "请勾选“OCR 前先移除旧的隐形文字层”，或改用“跳过 / 强制”模式"
+                if kw.get("hidden_text_layer") == "keep"
+                else "页面含可见文字（或隐形文字背后没有图片），请改用“跳过 / 强制”模式"
+            )
+            state["errors"].append((fname, "页面已有文字"))
+            _log(state, "warning", fname, f"{fname}：已包含文字层，未处理；{hint} (耗时: {elapsed_str})")
         elif result == ocrmypdf.ExitCode.encrypted_pdf:
             state["errors"].append((fname, "PDF 已加密"))
             _log(state, "error", fname, f"{fname}：PDF 已加密，请先解密 (耗时: {elapsed_str})")
@@ -726,7 +755,12 @@ def _run_ocr_batch(
     finally:
         task_dir = state.get("task_dir")
         if task_dir:
+            # 任务彻底完成：清理磁盘上的输入缓存，输出保留到用户清除。
             shutil.rmtree(Path(task_dir) / "inputs", ignore_errors=True)
+            try:
+                _upload_server.mark_done(Path(task_dir))
+            except Exception:
+                pass
         state["running"] = False
         state["done"] = True
         state["progress"] = 1.0
@@ -737,7 +771,7 @@ def _run_ocr_batch(
 # 侧边栏
 # ---------------------------------------------------------------------------
 st.sidebar.markdown(
-    '<h2 style="color:#E8751A">\U0001F4D6 AIH-Infra OCR</h2>',
+    '<h2 style="color:#E8751A">\U0001F4D6 AIH-OCRmyPDF</h2>',
     unsafe_allow_html=True,
 )
 
@@ -746,7 +780,7 @@ st.sidebar.header("OCR 引擎")
 backend = st.sidebar.radio(
     "选择后端",
     ["Tesseract", "PaddleOCR（本地全链路）", "Calamari（HTTP服务）", "Chrome ScreenAI（本地）", "无（仅 PDF/A 转换）"],
-    index=0,  # 默认选择 Tesseract
+    index=3,  # 默认选择 Chrome ScreenAI（本地）
 )
 
 calamari_url = ""
@@ -1155,7 +1189,7 @@ else:
 # -- OCR 模式 --
 st.sidebar.header("OCR 模式")
 MODE_LABELS = {
-    "default": "默认（遇到已有文字报错）",
+    "default": "默认（遇到可见文字报错）",
     "skip": "跳过（跳过已有文字的页面）",
     "force": "强制（光栅化全部内容重新 OCR）",
     "redo": "重做（删除旧 OCR 层重新识别）",
@@ -1166,6 +1200,17 @@ mode = st.sidebar.selectbox(
     format_func=lambda x: MODE_LABELS[x],
     index=3,  # 默认选择 redo
 )
+_strip_applies = mode in ("default", "redo")
+strip_hidden_layer = st.sidebar.checkbox(
+    "OCR 前先移除旧的隐形文字层",
+    value=True,
+    disabled=not _strip_applies,
+    help="扫描图 + 上次 OCR 留下的隐形文字层：先去掉再重新识别，不会因“已有文字”而中止。"
+    "只删不可见文字，且仅限背后有图片的页面；可见文字不动，原文件不改。"
+    "跳过/强制模式下不适用（跳过保留原文字，强制本来就会栅格化）。",
+)
+if not _strip_applies:
+    st.sidebar.caption("当前处理模式不使用此选项。")
 
 # -- 预处理 --
 with st.sidebar.expander("预处理选项"):
@@ -1258,9 +1303,9 @@ with st.sidebar.expander("性能设置"):
             jobs = st.slider(
                 "单书并行页段数",
                 1,
-                16,
+                24,
                 8,
-                help="把一本书切成多个页段，交给多个独立子进程并行 OCR。默认 8，最高 16。",
+                help="把一本书切成多个页段，交给多个独立子进程并行 OCR。默认 8，最高 24。",
                 key="chrome_page_workers",
             )
             file_concurrency = 1
@@ -1269,9 +1314,10 @@ with st.sidebar.expander("性能设置"):
             file_concurrency = st.slider(
                 "并行书本数",
                 1,
-                max(1, cpu_count // 2),
+                24,
                 min(3, max(1, cpu_count // 2)),
-                help="同时处理多本书；Chrome 会使用进程隔离，每本书内部固定为单线程顺序处理页面。",
+                help="同时处理多本书；Chrome 会使用进程隔离，每本书内部固定为单线程顺序处理页面。"
+                     "上限 24；超过 CPU 核心数时属于超配，吞吐未必线性提升。",
                 key="chrome_file_concurrency",
             )
             jobs = 1
@@ -1304,19 +1350,34 @@ with st.sidebar.expander("性能设置"):
 # -- 输出存储 --
 _user_cfg = _load_config()
 _default_output_dir = _user_cfg.get("output_dir", str(Path.home() / "OCRmyPDF_output"))
+_default_suffix = _user_cfg.get("output_suffix", "_ocr")
+_default_save = bool(_user_cfg.get("save_to_disk", True))
 with st.sidebar.expander("输出存储"):
     output_suffix = st.text_input(
-        "输出文件名后缀", value="_ocr",
-        help="添加在 .pdf 扩展名之前",
+        "输出文件名后缀", value=_default_suffix,
+        help="添加在 .pdf 扩展名之前，可留空；修改后自动记住，下次启动沿用。"
+        "不能含 \\ / : * ? \" < > | 等文件名非法字符。",
     )
-    save_to_disk = st.checkbox("自动保存到磁盘", value=True)
+    if re.search(r'[\\/:*?"<>|\x00-\x1f]', output_suffix):
+        st.error("后缀含文件名非法字符，已按默认 _ocr 处理")
+        output_suffix = "_ocr"
+    save_to_disk = st.checkbox("自动保存到磁盘", value=_default_save)
     output_dir = ""
     if save_to_disk:
-        output_dir = st.text_input("输出目录", value=_default_output_dir)
-        if st.button("设为默认目录"):
-            _user_cfg["output_dir"] = output_dir
-            _save_config(_user_cfg)
-            st.success(f"已保存，下次启动将使用：{output_dir}")
+        output_dir = st.text_input(
+            "输出目录", value=_default_output_dir,
+            help="修改后自动记住，下次启动沿用。",
+        )
+    # 变更即持久化（无需再点按钮）
+    _new_cfg = {
+        **_user_cfg,
+        "output_suffix": output_suffix,
+        "save_to_disk": save_to_disk,
+        **({"output_dir": output_dir} if save_to_disk and output_dir else {}),
+    }
+    if _new_cfg != _user_cfg:
+        _save_config(_new_cfg)
+        _user_cfg = _new_cfg
 
 # ---------------------------------------------------------------------------
 # 主区域 — Logo + 头部
@@ -1330,36 +1391,200 @@ with _logo_col:
         st.markdown("#### \U0001F4D6")
 with _title_col:
     st.markdown(
-        '<h1 style="color:#E8751A;margin-bottom:0">OCRmyPDF-AIH Infra \u7279\u5316\u7248</h1>'
+        '<h1 style="color:#E8751A;margin-bottom:0">AIH-OCRmyPDF Infra \u7279\u5316\u7248</h1>'
         '<p style="color:#999;margin-top:0">\u7279\u5316 by <b>Baireinhold</b> &mdash; '
         '\u6279\u91cf PDF \u6587\u5b57\u8bc6\u522b\uff0c\u652f\u6301 Tesseract / PaddleOCR / Calamari / Chrome ScreenAI \u540e\u7aef</p>',
         unsafe_allow_html=True,
     )
 st.markdown("<hr style='margin:0.5rem 0'>", unsafe_allow_html=True)
 
-# -- 文件上传 --
-uploaded_files = st.file_uploader(
-    "上传 PDF 文件（支持多选）",
-    type=["pdf"],
-    accept_multiple_files=True,
-    key=f"files_{_ocr_state.get('upload_generation', 0)}",
-)
+# 内嵌上传页：直连旁路上传服务，逐本顺序上传，字节由服务端流式落盘。
+# __PORT__/__TOKEN__ 由下方代码替换。注意 components.html 的 iframe 以
+# srcdoc 渲染，自身 window.location 是 about:srcdoc（hostname 为空），
+# 必须从父页面地址探测主机名，本机和局域网其他设备才能都直连。
+_UPLOAD_PAGE_HTML = r"""<!doctype html>
+<html><head><meta charset="utf-8">
+<style>
+  html,body{margin:0;font-family:"Segoe UI","Microsoft YaHei",sans-serif;}
+  #drop{border:2px dashed #E8751A;border-radius:10px;background:#FFF5EB;color:#C45E10;
+        text-align:center;padding:24px 12px;cursor:pointer;font-size:14px;user-select:none;}
+  #drop.hover{background:#FCE6D4;}
+  #bar-wrap{height:8px;background:#F0E0D0;border-radius:4px;margin:10px 0 6px;overflow:hidden;display:none;}
+  #bar{height:100%;width:0%;background:#E8751A;border-radius:4px;transition:width .15s;}
+  #status{font-size:12.5px;color:#666;line-height:1.5;max-height:110px;overflow:auto;}
+  #status .err{color:#C0392B;}
+  #status .ok{color:#2E7D32;}
+</style></head>
+<body>
+<div id="drop">将 PDF 文件拖拽到此处，或点击选择文件（支持多选，可分批追加）</div>
+<input id="picker" type="file" multiple accept=".pdf,application/pdf" style="display:none">
+<div id="bar-wrap"><div id="bar"></div></div>
+<div id="status"></div>
+<script>
+var PORT = "__PORT__";
+var TOKEN = "__TOKEN__";
+var queue = [], totalBytes = 0, sentDone = 0, curLoaded = 0;
+var doneCount = 0, failCount = 0, busy = false;
+var drop = document.getElementById("drop"),
+    picker = document.getElementById("picker"),
+    barWrap = document.getElementById("bar-wrap"),
+    bar = document.getElementById("bar"),
+    statusEl = document.getElementById("status");
 
-if uploaded_files:
-    # -- 文件列表预览 --
-    st.subheader(f"已上传：{len(uploaded_files)} 个文件")
-    file_info = []
-    for f in uploaded_files:
-        file_info.append({
-            "文件名": f.name,
-            "大小 (MB)": f.size / (1024 * 1024),
-        })
-    st.dataframe(file_info, width="stretch", hide_index=True)
-    st.caption("提示：页数统计将在处理时显示")
+function detectHost(){
+  try { var h = window.parent.location.hostname; if (h) return h; } catch (e) {}
+  try {
+    if (document.referrer) { var r = new URL(document.referrer).hostname; if (r) return r; }
+  } catch (e) {}
+  try { var s = window.location.hostname; if (s) return s; } catch (e) {}
+  return "127.0.0.1";
+}
+var API = "http://" + detectHost() + ":" + PORT;
 
+function line(msg, cls){
+  var d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = msg;
+  statusEl.appendChild(d);
+  statusEl.scrollTop = statusEl.scrollHeight;
+}
+function fmt(n){ return (n / 1048576).toFixed(1) + " MB"; }
+function progress(){
+  if (!totalBytes) return;
+  barWrap.style.display = "block";
+  var p = (sentDone + curLoaded) / totalBytes * 100;
+  bar.style.width = Math.min(100, p).toFixed(1) + "%";
+}
+
+function enqueue(files){
+  var added = 0, bytes = 0;
+  for (var i = 0; i < files.length; i++){
+    var f = files[i];
+    if (!/\.pdf$/i.test(f.name)){ line("已跳过非 PDF 文件：" + f.name, "err"); continue; }
+    queue.push(f); totalBytes += f.size; bytes += f.size; added++;
+  }
+  if (added) line("已加入队列：" + added + " 个文件，共 " + fmt(bytes) + "；开始上传……");
+  pump();
+}
+function pump(){
+  if (busy) return;
+  var f = queue.shift();
+  if (!f){
+    if (totalBytes && sentDone + curLoaded >= totalBytes){
+      line("上传完成：成功 " + doneCount + " 个，失败 " + failCount + " 个；暂存列表将自动刷新。",
+           failCount ? "err" : "ok");
+    }
+    return;
+  }
+  busy = true; curLoaded = 0;
+  var xhr = new XMLHttpRequest();
+  try {
+    xhr.open("POST", API + "/upload?token=" + encodeURIComponent(TOKEN) +
+             "&name=" + encodeURIComponent(f.name), true);
+  } catch (err) {
+    busy = false; failCount++;
+    line("无法构造上传地址（" + err.message + "），请刷新页面重试", "err");
+    return;
+  }
+  xhr.upload.onprogress = function(e){
+    if (e.lengthComputable){ curLoaded = e.loaded; progress(); }
+  };
+  xhr.onload = function(){
+    busy = false;
+    if (xhr.status === 200){
+      doneCount++; sentDone += f.size; curLoaded = 0; progress();
+      var extra = "";
+      try { var r = JSON.parse(xhr.responseText); if (r && r.staged) extra = "（累计 " + r.staged + " 个）"; } catch (err) {}
+      line("已暂存至服务器磁盘缓存" + extra + "：" + f.name, "ok");
+    } else {
+      failCount++;
+      var msg = "上传失败：" + f.name;
+      try { msg += " — " + (JSON.parse(xhr.responseText).error || xhr.status); }
+      catch (err) { msg += " — HTTP " + xhr.status; }
+      line(msg, "err");
+      if (xhr.status === 0)
+        line("无法连接上传服务（" + API + "），请检查服务器防火墙是否放行端口 " + PORT, "err");
+    }
+    pump();
+  };
+  xhr.onerror = function(){
+    busy = false; failCount++;
+    line("网络错误，已跳过：" + f.name + "（可重新选择该文件继续上传）", "err");
+    pump();
+  };
+  xhr.send(f);
+}
+
+drop.onclick = function(){ picker.click(); };
+picker.onchange = function(){ enqueue(picker.files); picker.value = ""; };
+drop.ondragover = function(e){ e.preventDefault(); drop.className = "hover"; };
+drop.ondragleave = function(){ drop.className = ""; };
+drop.ondrop = function(e){ e.preventDefault(); drop.className = ""; enqueue(e.dataTransfer.files); };
+</script>
+</body></html>
+"""
+
+# -- 文件上传（旁路流式通道：字节边收边落盘，不经过 Streamlit 内存缓冲）--
+_upload_server.sweep_orphans()
+
+if not _ocr_state["running"]:
+    _upload_port = _upload_server.ensure_server()
+    _upload_token = st.session_state.get("aih_upload_token") or ""
+    if not _upload_token:
+        _upload_token = _upload_server.mint_token()
+        st.session_state["aih_upload_token"] = _upload_token
+    _upload_server.register_session(_upload_token, _ocr_state)
+    components.html(
+        _UPLOAD_PAGE_HTML
+        .replace("__PORT__", str(_upload_port))
+        .replace("__TOKEN__", _upload_token),
+        height=260,
+    )
+else:
+    st.info("处理进行中，待本批结束后可继续追加上传。")
+
+
+@st.fragment(run_every=2)
+def _staging_list_fragment():
+    """暂存列表（磁盘缓存；处理期间就是排队队列）。
+
+    独立片段每 2 秒刷新：旁路上传线程直接写 manifest，无需整页 rerun
+    即可看到新暂存的书；暂存区空/非空状态翻转时整页 rerun 一次，让
+    下方的页码过滤和开始按钮出现或隐藏。
+    """
+    staged = _staged_files(_ocr_state)
+    if bool(staged) != st.session_state.get("aih_had_staged", False):
+        st.session_state["aih_had_staged"] = bool(staged)
+        st.rerun()
+    if not staged:
+        return
+    total_mb = sum(f["size"] for f in staged) / (1024 * 1024)
+    st.subheader(f"已暂存：{len(staged)} 个文件（磁盘缓存 {total_mb:.1f} MB）")
+    st.dataframe(
+        [{"文件名": f["name"], "大小 (MB)": f["size"] / (1024 * 1024)} for f in staged],
+        width="stretch", hide_index=True,
+    )
+    if not _ocr_state["running"]:
+        rm_cols = st.columns([3, 1])
+        remove_sel = rm_cols[0].multiselect(
+            "从暂存区移除所选文件",
+            options=[Path(f["path"]).name for f in staged],
+        )
+        if rm_cols[1].button("移除", disabled=not remove_sel):
+            path_by_option = {Path(f["path"]).name: f["path"] for f in staged}
+            _remove_staged_files(_ocr_state, {path_by_option[n] for n in remove_sel})
+            st.rerun()
+    st.caption("提示：页数统计将在处理时显示；上传过程中可随时追加分批文件。")
+
+
+_staging_list_fragment()
+
+staged_files = _staged_files(_ocr_state)
+
+if staged_files:
     # -- 页码过滤 --
     pages_filter = st.text_input(
-        "页码过滤（可选）", value="",
+        "页码过滤（可选）", value="", key="pages_filter",
         help="例如 1-5,8,10-12 — 对所有文件生效",
     )
 
@@ -1408,6 +1633,7 @@ if uploaded_files:
             "remove_background": remove_background or None,
             "remove_vectors": remove_vectors or None,
             "progress_bar": False,
+            "hidden_text_layer": "strip" if strip_hidden_layer else "keep",
         }
 
         if oversample > 0:
@@ -1507,11 +1733,13 @@ if uploaded_files:
         else:
             print(f"[UI-DEBUG] calamari_deskew NOT in final kwargs", flush=True)
 
-        # 上传内容顺序落盘；后台任务只传路径，避免整批 PDF 常驻内存。
-        task_dir = _create_task_dir(_ocr_state)
-        files_data = _spool_uploads_to_disk(uploaded_files, task_dir)
-        # 下一次 rerun 使用新的 uploader，释放 Streamlit 持有的 UploadedFile 缓冲。
-        _ocr_state["upload_generation"] = _ocr_state.get("upload_generation", 0) + 1
+        # 队列只携带磁盘缓存路径；书的内容从上传起就只活在磁盘暂存区。
+        batch_dir = _get_batch_dir(_ocr_state)
+        if batch_dir is None or not staged_files:
+            st.error("暂存区为空，请先上传文件。")
+            st.stop()
+        _reset_batch_for_run(batch_dir, staged_files)
+        files_data = [(f["name"], f["path"]) for f in staged_files]
 
         # 重置状态
         _ocr_state["running"] = True
@@ -1535,7 +1763,7 @@ if uploaded_files:
         st.rerun()
 
 else:
-    st.info("请上传一个或多个 PDF 文件开始处理。")
+    st.info("请通过上方上传区添加 PDF 文件，支持拖拽、多选与分批追加。")
 
 # ---------------------------------------------------------------------------
 # 处理状态显示区（从 session_state 读取，不受 rerun 影响）
@@ -1633,3 +1861,7 @@ st.markdown(
     '</div>',
     unsafe_allow_html=True,
 )
+
+
+
+

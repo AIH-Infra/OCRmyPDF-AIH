@@ -173,7 +173,7 @@ def _build_streamlit_cmd(webui_path: Path, host: str, port: int, browser_host: s
 def _project_lock_path() -> Path:
     project_root = Path(__file__).resolve().parents[2]
     digest = hashlib.sha1(str(project_root).encode("utf-8")).hexdigest()[:12]
-    return Path(tempfile.gettempdir()) / f"ocrmypdf-aih-webui-{digest}.lock"
+    return Path(tempfile.gettempdir()) / f"aih-ocrmypdf-webui-{digest}.lock"
 
 
 def _read_lock(lock_path: Path) -> dict:
@@ -213,9 +213,9 @@ def _acquire_single_instance_lock(host: str, browser_host: str) -> Path | None:
         if _is_lock_active(lock_path, data):
             port = data.get("port")
             if isinstance(port, int):
-                print(f"[OCRmyPDF-AIH] Web UI is already running at http://{browser_host}:{port}")
+                print(f"[AIH-OCRmyPDF] Web UI is already running at http://{browser_host}:{port}")
             else:
-                print("[OCRmyPDF-AIH] Web UI is already starting. Please use the existing window.")
+                print("[AIH-OCRmyPDF] Web UI is already starting. Please use the existing window.")
             return None
         try:
             lock_path.unlink()
@@ -226,7 +226,7 @@ def _acquire_single_instance_lock(host: str, browser_host: str) -> Path | None:
     try:
         fd = os.open(str(lock_path), flags)
     except FileExistsError:
-        print("[OCRmyPDF-AIH] Web UI is already starting. Please use the existing window.")
+        print("[AIH-OCRmyPDF] Web UI is already starting. Please use the existing window.")
         return None
     with os.fdopen(fd, "w", encoding="utf-8") as f:
         payload = {
@@ -251,13 +251,13 @@ def main() -> int:
     for retry in range(2):
         port = _find_available_port(host=host, start_port=start_port + retry)
         if host == "0.0.0.0":
-            print(f"[OCRmyPDF-AIH] Web UI listening on all interfaces at 0.0.0.0:{port}")
-            print(f"[OCRmyPDF-AIH] Open locally at http://{browser_host}:{port}")
-            print(f"[OCRmyPDF-AIH] Also available at http://127.0.0.1:{port}")
+            print(f"[AIH-OCRmyPDF] Web UI listening on all interfaces at 0.0.0.0:{port}")
+            print(f"[AIH-OCRmyPDF] Open locally at http://{browser_host}:{port}")
+            print(f"[AIH-OCRmyPDF] Also available at http://127.0.0.1:{port}")
         else:
-            print(f"[OCRmyPDF-AIH] Web UI starting at http://{host}:{port}")
+            print(f"[AIH-OCRmyPDF] Web UI starting at http://{host}:{port}")
             if host == "127.0.0.1":
-                print(f"[OCRmyPDF-AIH] Also available at http://localhost:{port}")
+                print(f"[AIH-OCRmyPDF] Also available at http://localhost:{port}")
 
         cmd = _build_streamlit_cmd(webui_path, host, port, browser_host)
         rc = subprocess.call(cmd)
@@ -267,7 +267,7 @@ def main() -> int:
         port_still_unavailable = not _is_port_available(host, port)
         if retry == 0 and port_still_unavailable:
             print(
-                f"[OCRmyPDF-AIH] Streamlit exited with code {rc}, and port {port} is no longer available. "
+                f"[AIH-OCRmyPDF] Streamlit exited with code {rc}, and port {port} is no longer available. "
                 "Retrying with the next port."
             )
             last_error = RuntimeError(
@@ -276,7 +276,7 @@ def main() -> int:
             continue
 
         print(
-            f"[OCRmyPDF-AIH] Streamlit exited with code {rc}. "
+            f"[AIH-OCRmyPDF] Streamlit exited with code {rc}. "
             "Not retrying automatically because this does not look like a port conflict."
         )
         return rc

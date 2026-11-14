@@ -448,11 +448,9 @@ class ChromeScreenAIBackend:
                 )
                 proc = subprocess.Popen(
                     [sys.executable, "-m", "ocrmypdf.aih_chrome_chunk_worker", token],
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                     env=env,
                     cwd=str(Path(__file__).parents[1]),
                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -489,12 +487,16 @@ class ChromeScreenAIBackend:
                                 progress_state["page_total"] = len(selected_pages)
                                 progress_state["page_desc"] = f"Chrome ScreenAI OCR ({max_workers} workers)"
                             continue
-                        stdout, stderr = proc.communicate()
+                        proc.communicate()
                         job = item["job"]
                         if proc.returncode != 0:
-                            raise RuntimeError(
-                                stderr.strip() or stdout.strip() or f"Chrome chunk worker failed: {job['input_pdf']}"
-                            )
+                            detail = f"Chrome chunk worker failed: {job['input_pdf']}"
+                            try:
+                                result_meta = json.loads(job["result_json"].read_text(encoding="utf-8"))
+                                detail = str(result_meta.get("error") or detail)
+                            except Exception:
+                                pass
+                            raise RuntimeError(detail)
                         result_meta = json.loads(job["result_json"].read_text(encoding="utf-8"))
                         if not result_meta.get("ok"):
                             raise RuntimeError(result_meta.get("error", "Chrome chunk worker failed"))
@@ -678,6 +680,7 @@ class ChromeScreenAIBackend:
             [sys.executable, "-m", "ocrmypdf.aih_chrome_line_worker", token],
             cwd=str(Path(__file__).resolve().parents[2]),
             env=env,
+            stdin=subprocess.DEVNULL,
             text=True,
             encoding="utf-8",
             errors="replace",

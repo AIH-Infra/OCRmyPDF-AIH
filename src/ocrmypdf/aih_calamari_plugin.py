@@ -66,6 +66,16 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+_diag_log = logging.getLogger("ocrmypdf.aih")
+
+
+def _diag(*args, **_kwargs) -> None:
+    """Diagnostic output. Goes to the logging system (visible with -v), never stdout.
+
+    stdout must stay clean because `ocrmypdf ... -` writes the PDF there.
+    """
+    _diag_log.debug(" ".join(str(a) for a in args))
+
 # Ghostscript 可执行文件
 _GS = "gswin64c" if os.name == "nt" else "gs"
 
@@ -505,12 +515,12 @@ def _build_word_spans_from_explicit_words(
 def _check_tesseract_available() -> bool:
     """检查 Tesseract 是否可用."""
     try:
-        print(f"[DEBUG] PATH in check: {os.environ.get('PATH', 'NOT SET')[:200]}", flush=True)
+        _diag(f"[DEBUG] PATH in check: {os.environ.get('PATH', 'NOT SET')[:200]}", flush=True)
         result = subprocess_run(['tesseract', '--version'], capture_output=True, timeout=5, env=os.environ)
-        print(f"[DEBUG] Tesseract check returncode: {result.returncode}", flush=True)
+        _diag(f"[DEBUG] Tesseract check returncode: {result.returncode}", flush=True)
         return result.returncode == 0
     except Exception as e:
-        print(f"[DEBUG] Tesseract check exception: {e}", flush=True)
+        _diag(f"[DEBUG] Tesseract check exception: {e}", flush=True)
         return False
 
 
@@ -671,7 +681,7 @@ def _replace_hocr_line_texts(hocr_content: str, calamari_texts: list[str]) -> st
     else:
         ocr_lines = soup.find_all('span', class_='ocr_line')
 
-    print(f"[DEBUG] hOCR has {len(ocr_lines)} lines, Calamari has {len(calamari_texts)} texts", flush=True)
+    _diag(f"[DEBUG] hOCR has {len(ocr_lines)} lines, Calamari has {len(calamari_texts)} texts", flush=True)
 
     for i, line_span in enumerate(ocr_lines):
         if i < len(calamari_texts):
@@ -742,9 +752,9 @@ def _build_simple_hocr_from_lineboxes(
         "    \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\n"
         "<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\" lang=\"en\">\n"
         "<head>\n"
-        "  <title>OCRmyPDF-AIH Calamari hOCR</title>\n"
+        "  <title>AIH-OCRmyPDF Calamari hOCR</title>\n"
         "  <meta http-equiv='Content-Type' content='text/html;charset=utf-8'/>\n"
-        "  <meta name='ocr-system' content='OCRmyPDF-AIH Calamari'/>\n"
+        "  <meta name='ocr-system' content='AIH-OCRmyPDF Calamari'/>\n"
         "</head>\n"
         "<body>\n"
         f"  <div class='ocr_page' id='page_1' title='bbox 0 0 {width} {height}; scan_res {dpi_x} {dpi_y}'>\n"
@@ -772,7 +782,7 @@ def _write_empty_hocr_page(image_path: Path, output_hocr: Path, output_text: Pat
     )
     output_hocr.write_text(final_hocr, encoding="utf-8")
     output_text.write_text("", encoding="utf-8")
-    print(f"[DIAG] Empty hOCR page written: {reason}", flush=True)
+    _diag(f"[DIAG] Empty hOCR page written: {reason}", flush=True)
 
 
 class _ChromeLineBox(NamedTuple):
@@ -1192,7 +1202,7 @@ def _detect_and_rotate_if_needed(image_path: Path) -> dict:
     Returns:
         dict: {'rotate': 90, 'deskew': 2.5, 'confidence': 8.5}
     """
-    print(f"[DESKEW] Detecting: {image_path.name}", flush=True)
+    _diag(f"[DESKEW] Detecting: {image_path.name}", flush=True)
     try:
         result = subprocess_run(
             ['tesseract', str(image_path), 'stdout', '--psm', '0', '-l', 'osd'],
@@ -1201,7 +1211,7 @@ def _detect_and_rotate_if_needed(image_path: Path) -> dict:
 
         if result.returncode != 0:
             if 'osd.traineddata' in result.stderr.lower():
-                print(f"[OSD] Warning: OSD data file not found", flush=True)
+                _diag(f"[OSD] Warning: OSD data file not found", flush=True)
             return {'rotate': 0, 'deskew': 0, 'confidence': 0}
 
         # 解析OSD输出
@@ -1227,25 +1237,25 @@ def _detect_and_rotate_if_needed(image_path: Path) -> dict:
                     pass
 
         # 输出原始检测结果
-        print(f"[DESKEW] OSD raw: rotate={rotate_angle}, orient={orientation_degrees:.2f}°, conf={confidence:.2f}", flush=True)
+        _diag(f"[DESKEW] OSD raw: rotate={rotate_angle}, orient={orientation_degrees:.2f}°, conf={confidence:.2f}", flush=True)
 
         # 如果 OSD 未检测到倾斜，使用投影法补充检测（适用于 Fraktur 等字体）
         if abs(orientation_degrees) < 0.5 and confidence >= 1.0:
             projection_angle = _detect_skew_by_projection(image_path)
             if abs(projection_angle) >= 0.5:
-                print(f"[DESKEW] Projection detected: {projection_angle:.2f}°", flush=True)
+                _diag(f"[DESKEW] Projection detected: {projection_angle:.2f}°", flush=True)
                 orientation_degrees = projection_angle
                 confidence = 10.0  # 投影法置信度设为固定值
 
         # 置信度检查（降低阈值以适应 Fraktur 等历史字体）
         if confidence < 1.0:
             if rotate_angle != 0 or abs(orientation_degrees) > 0.5:
-                print(f"[DESKEW] Low confidence ({confidence:.2f}), skipping", flush=True)
+                _diag(f"[DESKEW] Low confidence ({confidence:.2f}), skipping", flush=True)
             return {'rotate': 0, 'deskew': 0, 'confidence': confidence}
 
         # 角度范围限制
         if abs(orientation_degrees) > 10:
-            print(f"[DESKEW] Angle too large ({orientation_degrees:.2f}°), skipping", flush=True)
+            _diag(f"[DESKEW] Angle too large ({orientation_degrees:.2f}°), skipping", flush=True)
             orientation_degrees = 0
         if abs(orientation_degrees) < 0.5:
             orientation_degrees = 0
@@ -1258,7 +1268,7 @@ def _detect_and_rotate_if_needed(image_path: Path) -> dict:
         import cv2
         img = cv2.imread(str(image_path))
         if img is None:
-            print(f"[DESKEW] Failed to read image: {image_path}", flush=True)
+            _diag(f"[DESKEW] Failed to read image: {image_path}", flush=True)
             return {'rotate': 0, 'deskew': 0, 'confidence': 0}
 
         h, w = img.shape[:2]
@@ -1295,10 +1305,10 @@ def _detect_and_rotate_if_needed(image_path: Path) -> dict:
         }
 
     except FileNotFoundError:
-        print(f"[DESKEW] Tesseract not found in PATH", flush=True)
+        _diag(f"[DESKEW] Tesseract not found in PATH", flush=True)
         return {'rotate': 0, 'deskew': 0, 'confidence': 0}
     except Exception as e:
-        print(f"[DESKEW] Unexpected error: {e}", flush=True)
+        _diag(f"[DESKEW] Unexpected error: {e}", flush=True)
         return {'rotate': 0, 'deskew': 0, 'confidence': 0}
 
 
@@ -1410,7 +1420,7 @@ def _preflight_render_and_segment(
             _save_deskew_angle(pageno - 1, deskew_info)  # GS 1-indexed → 0-indexed
 
             if deskew_info['rotate'] != 0 or deskew_info['deskew'] != 0:
-                print(f"[DESKEW] Page {pageno}: rotate={deskew_info['rotate']}°, "
+                _diag(f"[DESKEW] Page {pageno}: rotate={deskew_info['rotate']}°, "
                       f"deskew={deskew_info['deskew']:.2f}°, conf={deskew_info['confidence']:.2f}", flush=True)
 
             # 使用 Tesseract / Chrome ScreenAI / 投影法 分割
@@ -1421,12 +1431,12 @@ def _preflight_render_and_segment(
                     line_bboxes = _parse_line_bboxes_from_hocr(tesseract_hocr)
                     if line_bboxes:
                         lines = _crop_line_images_by_bbox(out_png, line_bboxes, binarize=binarize)
-                        print(f"[DIAG] Preflight page {pageno}: Tesseract detected {len(line_bboxes)} lines, cropped {len(lines)}", flush=True)
+                        _diag(f"[DIAG] Preflight page {pageno}: Tesseract detected {len(line_bboxes)} lines, cropped {len(lines)}", flush=True)
                     else:
                         lines = _segment_lines_client(out_png)
-                        print(f"[DIAG] Preflight page {pageno}: Tesseract failed, using projection: {len(lines)} lines", flush=True)
+                        _diag(f"[DIAG] Preflight page {pageno}: Tesseract failed, using projection: {len(lines)} lines", flush=True)
                 except Exception as e:
-                    print(f"[DIAG] Preflight page {pageno}: Tesseract error ({e}), using projection", flush=True)
+                    _diag(f"[DIAG] Preflight page {pageno}: Tesseract error ({e}), using projection", flush=True)
                     lines = _segment_lines_client(out_png)
             elif line_detector == "chrome_screenai":
                 line_boxes = _detect_lines_with_chrome_screenai(out_png)
@@ -1436,7 +1446,7 @@ def _preflight_render_and_segment(
                     line_boxes,
                     binarize=binarize,
                 )
-                print(
+                _diag(
                     f"[DIAG] Preflight page {pageno}: Chrome ScreenAI detected {len(line_boxes)} lines, cropped {len(lines)}",
                     flush=True,
                 )
@@ -1448,7 +1458,7 @@ def _preflight_render_and_segment(
                     line_boxes,
                     binarize=binarize,
                 )
-                print(
+                _diag(
                     f"[DIAG] Preflight page {pageno}: PaddleOCR detected {len(line_boxes)} lines, cropped {len(lines)}",
                     flush=True,
                 )
@@ -1637,8 +1647,8 @@ def _run_preflight(pdfinfo: "PdfInfo", options: "OcrOptions"):
     line_detector = str(_config.get("line_detector", "projection_debug"))
     client = _get_client()
 
-    print(f"[DIAG] Preflight: use_tesseract_segmentation={use_tesseract}, binarize_lines={binarize_lines}", flush=True)
-    print(f"[DIAG] Preflight: line_detector={line_detector}", flush=True)
+    _diag(f"[DIAG] Preflight: use_tesseract_segmentation={use_tesseract}, binarize_lines={binarize_lines}", flush=True)
+    _diag(f"[DIAG] Preflight: line_detector={line_detector}", flush=True)
 
     log.info(
         "Preflight OCR: %d pages, chunk=%d, dpi=%d, workers=%d, model=%s, tesseract=%s, line_detector=%s",
@@ -1941,7 +1951,7 @@ class CalamariOcrEngine(OcrEngine):
         input_file: Path, options: OcrOptions
     ) -> OrientationConfidence:
         """使用 Tesseract OSD 检测页面方向并返回旋转角度"""
-        print(f"[OSD] Detecting orientation for {input_file.name}", flush=True)
+        _diag(f"[OSD] Detecting orientation for {input_file.name}", flush=True)
 
         try:
             # 调用 Tesseract OSD (Orientation and Script Detection)
@@ -1955,9 +1965,9 @@ class CalamariOcrEngine(OcrEngine):
 
             # 检查命令是否成功
             if result.returncode != 0:
-                print(f"[OSD] Tesseract OSD failed with code {result.returncode}", flush=True)
+                _diag(f"[OSD] Tesseract OSD failed with code {result.returncode}", flush=True)
                 if result.stderr:
-                    print(f"[OSD] Error: {result.stderr.strip()}", flush=True)
+                    _diag(f"[OSD] Error: {result.stderr.strip()}", flush=True)
                 return OrientationConfidence(angle=0, confidence=0.0)
 
             # 解析输出获取旋转角度和置信度
@@ -1976,21 +1986,21 @@ class CalamariOcrEngine(OcrEngine):
                     except (ValueError, IndexError):
                         pass
 
-            print(f"[OSD] Detected: angle={angle}°, confidence={confidence:.2f}", flush=True)
+            _diag(f"[OSD] Detected: angle={angle}°, confidence={confidence:.2f}", flush=True)
 
             # 置信度阈值检查：低于 5.0 认为不可靠
             if confidence < 5.0:
-                print(f"[OSD] Confidence too low ({confidence:.2f} < 5.0), using angle=0", flush=True)
+                _diag(f"[OSD] Confidence too low ({confidence:.2f} < 5.0), using angle=0", flush=True)
                 return OrientationConfidence(angle=0, confidence=0.0)
 
-            print(f"[OSD] Applying rotation: {angle}°", flush=True)
+            _diag(f"[OSD] Applying rotation: {angle}°", flush=True)
             return OrientationConfidence(angle=angle, confidence=confidence)
 
         except FileNotFoundError:
-            print("[OSD] Tesseract not found, fallback to angle=0", flush=True)
+            _diag("[OSD] Tesseract not found, fallback to angle=0", flush=True)
             return OrientationConfidence(angle=0, confidence=0.0)
         except Exception as e:
-            print(f"[OSD] Failed: {e}, fallback to angle=0", flush=True)
+            _diag(f"[OSD] Failed: {e}, fallback to angle=0", flush=True)
             return OrientationConfidence(angle=0, confidence=0.0)
 
     @staticmethod
@@ -2004,7 +2014,7 @@ class CalamariOcrEngine(OcrEngine):
 
         优先从预飞缓存读取；缓存未命中时降级到正常 per-page OCR。
         """
-        print(f"[DIAG] generate_hocr called: output_hocr={output_hocr}, output_text={output_text}", flush=True)
+        _diag(f"[DIAG] generate_hocr called: output_hocr={output_hocr}, output_text={output_text}", flush=True)
 
         # ===== 纠偏处理 =====
         temp_file_to_cleanup = None
@@ -2013,7 +2023,7 @@ class CalamariOcrEngine(OcrEngine):
 
         if cached_angle and (cached_angle['rotate'] != 0 or cached_angle['deskew'] != 0):
             # 有缓存角度，应用纠偏
-            print(f"[DESKEW] Applying cached angle: {cached_angle}", flush=True)
+            _diag(f"[DESKEW] Applying cached angle: {cached_angle}", flush=True)
             deskewed_file = _apply_deskew(input_file, cached_angle)
             if deskewed_file != input_file:
                 temp_file_to_cleanup = deskewed_file
@@ -2025,7 +2035,7 @@ class CalamariOcrEngine(OcrEngine):
             # 非Preflight模式，检测并纠偏
             deskew_info = _detect_and_rotate_if_needed(input_file)
             if deskew_info['rotate'] != 0 or deskew_info['deskew'] != 0:
-                print(f"[DESKEW] Detected angle: {deskew_info}", flush=True)
+                _diag(f"[DESKEW] Detected angle: {deskew_info}", flush=True)
                 deskewed_file = _apply_deskew(input_file, deskew_info)
                 if deskewed_file != input_file:
                     temp_file_to_cleanup = deskewed_file
@@ -2056,8 +2066,8 @@ class CalamariOcrEngine(OcrEngine):
                 cache_file = Path(cache_dir) / f"page_{pageno:06d}.txt"
                 if cache_file.exists():
                     text = cache_file.read_text(encoding="utf-8")
-                    print(f"[DIAG] Preflight cache hit: page {pageno}", flush=True)
-                    print(f"[DIAG] use_tesseract_seg={use_tesseract_seg}, tesseract_available={_check_tesseract_available()}", flush=True)
+                    _diag(f"[DIAG] Preflight cache hit: page {pageno}", flush=True)
+                    _diag(f"[DIAG] use_tesseract_seg={use_tesseract_seg}, tesseract_available={_check_tesseract_available()}", flush=True)
 
                     if line_detector == "paddle_det":
                         try:
@@ -2085,7 +2095,7 @@ class CalamariOcrEngine(OcrEngine):
                                 input_file,
                             )
                             texts = text.splitlines()
-                            print(
+                            _diag(
                                 f"[DIAG] Preflight PaddleOCR cache hit: {len(paddle_line_boxes)} boxes, {len(texts)} texts",
                                 flush=True,
                             )
@@ -2098,7 +2108,7 @@ class CalamariOcrEngine(OcrEngine):
                             )
                             output_hocr.write_text(final_hocr, encoding="utf-8")
                             output_text.write_text("\n".join(texts), encoding="utf-8")
-                            print("[SUCCESS] Preflight: Generated hOCR from PaddleOCR line boxes", flush=True)
+                            _diag("[SUCCESS] Preflight: Generated hOCR from PaddleOCR line boxes", flush=True)
                             return
                         except Exception as e:
                             raise RuntimeError(
@@ -2122,7 +2132,7 @@ class CalamariOcrEngine(OcrEngine):
                                     input_file,
                                 )
                                 texts = text.splitlines()
-                                print(
+                                _diag(
                                     f"[DIAG] Preflight Chrome cache hit: {len(chrome_line_boxes)} boxes, {len(texts)} texts",
                                     flush=True,
                                 )
@@ -2135,7 +2145,7 @@ class CalamariOcrEngine(OcrEngine):
                                 )
                                 output_hocr.write_text(final_hocr, encoding="utf-8")
                                 output_text.write_text("\n".join(texts), encoding="utf-8")
-                                print("[SUCCESS] Preflight: Generated hOCR from cached Chrome ScreenAI line boxes", flush=True)
+                                _diag("[SUCCESS] Preflight: Generated hOCR from cached Chrome ScreenAI line boxes", flush=True)
                                 return
                             raise RuntimeError(
                                 f"Preflight Chrome linebox cache missing for page {pageno}"
@@ -2153,37 +2163,37 @@ class CalamariOcrEngine(OcrEngine):
 
                             if cached_hocr_data:
                                 cached_hocr, source_dpi = cached_hocr_data
-                                print(f"[DIAG] Using cached hOCR from Preflight (source DPI: {source_dpi})", flush=True)
+                                _diag(f"[DIAG] Using cached hOCR from Preflight (source DPI: {source_dpi})", flush=True)
 
                                 # 获取目标 DPI
                                 target_dpi = _get_image_dpi(input_file)
-                                print(f"[DIAG] Target image DPI: {target_dpi}", flush=True)
+                                _diag(f"[DIAG] Target image DPI: {target_dpi}", flush=True)
 
                                 # 如果 DPI 不同，缩放 bbox
                                 if source_dpi != target_dpi:
-                                    print(f"[DIAG] Scaling hOCR bbox from {source_dpi} to {target_dpi} DPI", flush=True)
+                                    _diag(f"[DIAG] Scaling hOCR bbox from {source_dpi} to {target_dpi} DPI", flush=True)
                                     cached_hocr = _scale_hocr_dpi(cached_hocr, source_dpi, target_dpi)
 
                                 tesseract_hocr_full = cached_hocr
                             else:
                                 # Fallback：重新调用 Tesseract
-                                print("[DIAG] Cached hOCR not found, calling Tesseract", flush=True)
+                                _diag("[DIAG] Cached hOCR not found, calling Tesseract", flush=True)
                                 language = options.languages[0] if options.languages else "deu"
                                 tesseract_hocr_full = _get_tesseract_hocr(input_file, language)
 
                             # 将缓存文本按行分割
                             calamari_texts = text.splitlines()
-                            print(f"[DIAG] Preflight: Replacing {len(calamari_texts)} texts in hOCR", flush=True)
-                            print(f"[DIAG] First 3 texts: {calamari_texts[:3]}", flush=True)
+                            _diag(f"[DIAG] Preflight: Replacing {len(calamari_texts)} texts in hOCR", flush=True)
+                            _diag(f"[DIAG] First 3 texts: {calamari_texts[:3]}", flush=True)
 
                             # 替换hOCR中的文本
                             final_hocr = _replace_hocr_line_texts(tesseract_hocr_full, calamari_texts)
                             output_hocr.write_text(final_hocr, encoding="utf-8")
                             output_text.write_text("\n".join(calamari_texts), encoding="utf-8")
-                            print(f"[SUCCESS] Preflight: Generated hOCR preserving all lines", flush=True)
+                            _diag(f"[SUCCESS] Preflight: Generated hOCR preserving all lines", flush=True)
                             return
                         except Exception as e:
-                            print(f"[DIAG] Preflight Tesseract hOCR failed: {e}, using fallback", flush=True)
+                            _diag(f"[DIAG] Preflight Tesseract hOCR failed: {e}, using fallback", flush=True)
 
         # ---- 缓存未命中：正常 OCR ----
         if text is None:
@@ -2196,11 +2206,11 @@ class CalamariOcrEngine(OcrEngine):
             # 使用 Tesseract 行分割模式
             # 暂时禁用，使用fallback路径
             if False and use_tesseract_seg and seg_mode == "client":
-                print("[DIAG] Using Tesseract line segmentation mode", flush=True)
+                _diag("[DIAG] Using Tesseract line segmentation mode", flush=True)
 
                 # 检查 Tesseract 可用性
                 if not _check_tesseract_available():
-                    print("[DIAG] Tesseract not available, falling back", flush=True)
+                    _diag("[DIAG] Tesseract not available, falling back", flush=True)
                     use_tesseract_seg = False
 
                 if use_tesseract_seg:
@@ -2215,20 +2225,20 @@ class CalamariOcrEngine(OcrEngine):
                         line_bboxes = _parse_line_bboxes_from_hocr(tesseract_hocr_full)
 
                         if line_bboxes:
-                            print(f"[DIAG] Tesseract detected {len(line_bboxes)} lines", flush=True)
+                            _diag(f"[DIAG] Tesseract detected {len(line_bboxes)} lines", flush=True)
 
                             # 根据 bbox 切割行图像
                             line_images = _crop_line_images_by_bbox(input_file, line_bboxes, binarize=binarize_lines)
-                            print(f"[DIAG] Cropped {len(line_images)} line images (binarize={binarize_lines})", flush=True)
+                            _diag(f"[DIAG] Cropped {len(line_images)} line images (binarize={binarize_lines})", flush=True)
 
                             if line_images and len(line_images) == len(line_bboxes):
                                 # 发送给 Calamari 批量识别
                                 results = client.ocr_batch(line_images, model, mode=_config["batch_mode"])
-                                print(f"[DIAG] Calamari returned {len(results)} results", flush=True)
+                                _diag(f"[DIAG] Calamari returned {len(results)} results", flush=True)
 
                                 # 提取文本（保留所有结果，包括空字符串）
                                 calamari_texts = [r.get("text", "") for r in results]
-                                print(f"[DIAG] Replacing {len(calamari_texts)} texts in Tesseract hOCR", flush=True)
+                                _diag(f"[DIAG] Replacing {len(calamari_texts)} texts in Tesseract hOCR", flush=True)
 
                                 # 直接替换 Tesseract hOCR 中的文本，保留所有行结构
                                 final_hocr = _replace_hocr_line_texts(tesseract_hocr_full, calamari_texts)
@@ -2236,16 +2246,16 @@ class CalamariOcrEngine(OcrEngine):
                                 # 直接写入输出并返回
                                 output_hocr.write_text(final_hocr, encoding="utf-8")
                                 output_text.write_text("\n".join(calamari_texts), encoding="utf-8")
-                                print(f"[SUCCESS] Generated hOCR with all {len(line_bboxes)} lines preserved", flush=True)
+                                _diag(f"[SUCCESS] Generated hOCR with all {len(line_bboxes)} lines preserved", flush=True)
                                 return
                             else:
-                                print(f"[DIAG] Image crop mismatch: {len(line_images)} != {len(line_bboxes)}, falling back", flush=True)
+                                _diag(f"[DIAG] Image crop mismatch: {len(line_images)} != {len(line_bboxes)}, falling back", flush=True)
                                 use_tesseract_seg = False
                         else:
-                            print("[DIAG] No lines detected by Tesseract, falling back", flush=True)
+                            _diag("[DIAG] No lines detected by Tesseract, falling back", flush=True)
                             use_tesseract_seg = False
                     except Exception as e:
-                        print(f"[DIAG] Tesseract segmentation failed: {e}, falling back", flush=True)
+                        _diag(f"[DIAG] Tesseract segmentation failed: {e}, falling back", flush=True)
                         use_tesseract_seg = False
 
             # 降级到原有方法
@@ -2269,13 +2279,13 @@ class CalamariOcrEngine(OcrEngine):
                             f"{label} returned no line boxes",
                         )
                         return
-                    print(f"[DIAG] {label} detected {len(line_boxes)} lines", flush=True)
+                    _diag(f"[DIAG] {label} detected {len(line_boxes)} lines", flush=True)
                     line_images = _crop_line_images_by_lineboxes(
                         input_file,
                         line_boxes,
                         binarize=binarize_lines,
                     )
-                    print(f"[DIAG] Cropped {len(line_images)} {label} line images", flush=True)
+                    _diag(f"[DIAG] Cropped {len(line_images)} {label} line images", flush=True)
                     texts = client.ocr_batch_ordered_texts(
                         line_images,
                         model,
@@ -2294,7 +2304,7 @@ class CalamariOcrEngine(OcrEngine):
                     )
                     output_hocr.write_text(final_hocr, encoding="utf-8")
                     output_text.write_text("\n".join(texts), encoding="utf-8")
-                    print(f"[SUCCESS] Generated hOCR from {label} line boxes", flush=True)
+                    _diag(f"[SUCCESS] Generated hOCR from {label} line boxes", flush=True)
                     return
                 if seg_mode == "client":
                     text = client.ocr_page_client_seg(input_file, model)
@@ -2339,7 +2349,7 @@ class CalamariOcrEngine(OcrEngine):
 
         # 如果启用了Tesseract但bbox为None（preflight缓存情况），获取bbox
         if use_tesseract_seg and tesseract_line_bboxes is None:
-            print(f"[DIAG] Preflight mode: fetching Tesseract bboxes", flush=True)
+            _diag(f"[DIAG] Preflight mode: fetching Tesseract bboxes", flush=True)
             if _check_tesseract_available():
                 try:
                     language = options.languages[0] if options.languages else "deu"
@@ -2347,9 +2357,9 @@ class CalamariOcrEngine(OcrEngine):
                     line_bboxes = _parse_line_bboxes_from_hocr(tesseract_hocr)
                     if line_bboxes:
                         tesseract_line_bboxes = line_bboxes
-                        print(f"[DIAG] Tesseract detected {len(line_bboxes)} lines (preflight mode)", flush=True)
+                        _diag(f"[DIAG] Tesseract detected {len(line_bboxes)} lines (preflight mode)", flush=True)
                 except Exception as e:
-                    print(f"[DIAG] Tesseract bbox extraction failed: {e}", flush=True)
+                    _diag(f"[DIAG] Tesseract bbox extraction failed: {e}", flush=True)
 
         # 诊断日志
         log.info("[DIAG] use_tesseract_seg=%s, tesseract_line_bboxes is not None=%s",
@@ -2389,14 +2399,14 @@ class CalamariOcrEngine(OcrEngine):
                 )
 
         # 将 OCR 文本行映射到检测到的行位置 (x0, y0, x1, y1)
-        print(f"[DIAG] Mapping: detected={len(detected) if detected else 0} bboxes, text_lines={len(text_lines)} lines", flush=True)
+        _diag(f"[DIAG] Mapping: detected={len(detected) if detected else 0} bboxes, text_lines={len(text_lines)} lines", flush=True)
 
         if detected and len(detected) >= len(text_lines):
             positions = detected[:len(text_lines)]
-            print(f"[DIAG] Case 1: Using first {len(positions)} bboxes (detected >= text_lines)", flush=True)
+            _diag(f"[DIAG] Case 1: Using first {len(positions)} bboxes (detected >= text_lines)", flush=True)
         elif detected:
             positions = detected
-            print(f"[DIAG] Case 2: Using all {len(positions)} bboxes (detected < text_lines)", flush=True)
+            _diag(f"[DIAG] Case 2: Using all {len(positions)} bboxes (detected < text_lines)", flush=True)
         else:
             # 检测失败：回退到均匀估算
             est_h = max(h // max(len(text_lines) + 2, 1), 20)
@@ -2509,11 +2519,8 @@ class ChromeScreenAIOcrEngine(OcrEngine):
     @staticmethod
     def version() -> str:
         try:
-            backend = ChromeScreenAIBackend(
-                light_mode=bool(_config.get("chrome_screenai_light", False)),
-                force_horizontal=bool(_config.get("chrome_screenai_force_horizontal", True)),
-            )
-            version = backend._get_screen_ai().version
+            from ocrmypdf._vendor.locro._dll import get_library_version
+            version = get_library_version()
             return f"{version[0]}.{version[1]}"
         except Exception:
             return "unavailable"
@@ -2762,7 +2769,7 @@ def add_options(parser):
         "--chrome-screenai-text-layer-mode",
         choices=["native_direct", "proxy_match"],
         default="native_direct",
-        help="Chrome ScreenAI 文本层模式：native_direct 完全直通；proxy_match 由 OCRmyPDF-AIH 代理匹配文本层。",
+        help="Chrome ScreenAI 文本层模式：native_direct 完全直通；proxy_match 由 AIH-OCRmyPDF 代理匹配文本层。",
     )
     calamari_group.add_argument(
         "--chrome-screenai-force-horizontal",
@@ -2962,8 +2969,8 @@ def check_options(options):
     paddle_ocr_python = _get_option(options, "paddle_ocr_python", "")
     paddle_ocr_source_dir = _get_option(options, "paddle_ocr_source_dir", "")
 
-    print(f"[DEBUG] Deskew params: deskew_enabled={deskew_enabled}, use_tesseract_seg={use_tesseract_seg}", flush=True)
-    log.info(
+    _diag(f"[DEBUG] Deskew params: deskew_enabled={deskew_enabled}, use_tesseract_seg={use_tesseract_seg}", flush=True)
+    log.debug(
         "[DEBUG] Preflight params: preflight=%s, chunk=%s, dpi=%s, workers=%s, batch_lines=%s, batch_mb=%s",
         preflight,
         preflight_chunk,
@@ -2972,8 +2979,8 @@ def check_options(options):
         preflight_batch_lines,
         preflight_batch_mb,
     )
-    log.info("[DEBUG] Deskew params: deskew_enabled=%s, use_tesseract_seg=%s", deskew_enabled, use_tesseract_seg)
-    log.info("[DEBUG] extra_attrs=%s", getattr(options, 'extra_attrs', {}))
+    log.debug("[DEBUG] Deskew params: deskew_enabled=%s, use_tesseract_seg=%s", deskew_enabled, use_tesseract_seg)
+    log.debug("[DEBUG] extra_attrs=%s", getattr(options, 'extra_attrs', {}))
 
     _config["url"] = url
     _config["model"] = model
@@ -3037,10 +3044,12 @@ def check_options(options):
     if engine in ("calamari",):
         info = _client.health()
         if info is None:
-            log.warning(
-                "Calamari 服务不可达: %s — OCR 可能失败。"
-                "请确认容器已启动且端口映射正确。",
-                url,
+            from ocrmypdf.exceptions import MissingDependencyError
+
+            raise MissingDependencyError(
+                f"Cannot reach the Calamari service at {url} (GET /health failed). "
+                "Check that the container is running and the port is mapped, "
+                "or set --calamari-url."
             )
         else:
             log.info(
@@ -3084,3 +3093,8 @@ def get_ocr_engine(options):
     if engine in ("paddle_ocr",):
         return PaddleOcrEngine()
     return None
+
+
+
+
+
