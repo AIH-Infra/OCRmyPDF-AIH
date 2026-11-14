@@ -4,7 +4,7 @@ cd /d "%~dp0"
 
 echo.
 echo ==========================================
-echo   AIH-OCRmyPDF Starting...
+echo   AIH-OCR Starting...
 echo ==========================================
 echo.
 

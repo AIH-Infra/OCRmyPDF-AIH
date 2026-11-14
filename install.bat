@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 echo.
 echo ============================================================
-echo    AIH-OCRmyPDF Environment Setup
+echo    AIH-OCR Environment Setup
 echo    Batch PDF OCR Pipeline
 echo ============================================================
 echo.
@@ -84,7 +84,7 @@ if errorlevel 1 exit /b 1
 python -m pip install --upgrade pip -q
 
 :: Step 3: Install Dependencies
-echo [3/4] Installing AIH-OCRmyPDF...
+echo [3/4] Installing AIH-OCR...
 echo.
 
 python -m pip install -e . -c requirements-lock.txt -q

@@ -16,7 +16,7 @@ from tempfile import mkdtemp
 import PIL
 
 from ocrmypdf.aih_chrome_screenai import ChromeScreenAIBackend
-from ocrmypdf.aih_text_layer import rasterize_pdf_pages, strip_hidden_text_layer
+from ocrmypdf.aih_text_layer import rasterize_pdf_pages, sanitize_pdf_for_screenai, strip_hidden_text_layer
 from ocrmypdf._concurrent import Executor
 from ocrmypdf._graft import OcrGrafter
 from ocrmypdf._jobcontext import PageContext, PdfContext
@@ -178,6 +178,8 @@ def _run_chrome_screenai_native_pdf(
     work_folder: Path,
     origin_pdf: Path,
     start_input_file: Path,
+    plugin_manager: OcrmypdfPluginManager,
+    executor: Executor,
 ) -> ExitCode:
     extra = getattr(options, "extra_attrs", {})
     requested_pages = options.pages
@@ -189,40 +191,8 @@ def _run_chrome_screenai_native_pdf(
         else None
     )
 
-    if options.output_type.startswith("pdfa"):
-        log.warning(
-            "Chrome ScreenAI native PDF path does not produce PDF/A; "
-            "falling back to regular PDF output."
-        )
-        object.__setattr__(options, "output_type", "pdf")
-    elif options.output_type == "auto":
-        options.extra_attrs["_actual_output_type"] = "pdf"
-
     output_pdf = work_folder / "chrome_screenai_native.pdf"
     chrome_input_pdf = origin_pdf
-    cleanup_mode = str(extra.get("chrome_screenai_text_cleanup", "mode_default"))
-    if options.mode == ProcessingMode.redo and cleanup_mode == "mode_default":
-        chrome_input_pdf = work_folder / "chrome_screenai_redo_input.pdf"
-        strip_report = strip_hidden_text_layer(
-            origin_pdf,
-            chrome_input_pdf,
-            pages=pages,
-        )
-        log.info(
-            "Chrome ScreenAI redo: removed %d hidden text operation(s) on %d page(s)",
-            strip_report.hidden_show_operations_removed,
-            len(strip_report.pages_changed),
-        )
-        if strip_report.pages_with_visible_text:
-            log.warning(
-                "Chrome ScreenAI redo preserved visible text on page(s): %s",
-                strip_report.pages_with_visible_text[:20],
-            )
-        if strip_report.form_xobjects_skipped:
-            log.warning(
-                "Chrome ScreenAI redo skipped %d nested Form XObject(s) because only a page subset was selected",
-                strip_report.form_xobjects_skipped,
-            )
 
     # Same policy as the Web UI: default 8 page workers, at most 24 (set with -j).
     workers = max(1, min(24, int(options.jobs or 8)))
@@ -247,8 +217,11 @@ def _run_chrome_screenai_native_pdf(
         sidecar_file.write_text(sidecar_text, encoding="utf-8")
         copy_final(sidecar_file, options.sidecar, options.input_file)
 
+    pdfinfo = do_get_pdfinfo(chrome_input_pdf, executor, options)
+    context = PdfContext(options, work_folder, chrome_input_pdf, pdfinfo, plugin_manager)
+    output_pdf, messages = postprocess(output_pdf, context, executor)
     copy_final(output_pdf, options.output_file, options.input_file)
-    return report_output_pdf(options, start_input_file, [])
+    return report_output_pdf(options, start_input_file, messages)
 
 
 def _strip_hidden_text_before_ocr(
@@ -325,11 +298,23 @@ def _run_pipeline(
         )
 
         extra_attrs = getattr(options, "extra_attrs", {})
-        origin_pdf = _strip_hidden_text_before_ocr(options, work_folder, origin_pdf)
         chrome_cleanup = str(
-            extra_attrs.get("chrome_screenai_text_cleanup", "mode_default")
-            or "mode_default"
+            extra_attrs.get("chrome_screenai_text_cleanup", "sanitize")
+            or "sanitize"
         )
+        if options.ocr_engine == "chrome_screenai" and chrome_cleanup in {"sanitize", "mode_default"}:
+            requested_pages = options.pages
+            if isinstance(requested_pages, str):
+                requested_pages = _pages_from_ranges(requested_pages)
+            cleanup_pages = sorted(n + 1 for n in requested_pages) if requested_pages else None
+            prepared_pdf = work_folder / "chrome_screenai_sanitized_input.pdf"
+            cleanup_report = sanitize_pdf_for_screenai(origin_pdf, prepared_pdf, pages=cleanup_pages)
+            log.info("ScreenAI 净化：移除隐藏文字操作 %d 项、注释 %d 项；文件 %d → %d 字节",
+                     cleanup_report["hidden_operations_removed"], cleanup_report["annotations_removed"],
+                     cleanup_report["input_bytes"], cleanup_report["output_bytes"])
+            origin_pdf = prepared_pdf
+        else:
+            origin_pdf = _strip_hidden_text_before_ocr(options, work_folder, origin_pdf)
         if options.ocr_engine == "chrome_screenai" and chrome_cleanup in {
             "clear_all",
             "rasterize",
@@ -386,6 +371,7 @@ def _run_pipeline(
                 work_folder=work_folder,
                 origin_pdf=origin_pdf,
                 start_input_file=start_input_file,
+                plugin_manager=plugin_manager, executor=executor,
             )
 
         # Gather pdfinfo and create context

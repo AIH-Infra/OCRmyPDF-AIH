@@ -1,14 +1,14 @@
 # SPDX-FileCopyrightText: 2022 James R. Barlow
-# SPDX-FileCopyrightText: 2025 Baireinhold / AIH-OCRmyPDF
+# SPDX-FileCopyrightText: 2025 Baireinhold / AIH-OCR
 # SPDX-License-Identifier: MPL-2.0
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "aih-ocrmypdf"
-version = "0.9.0"
-description = "AIH-OCRmyPDF — batch PDF OCR pipeline with Tesseract/Calamari backends, based on OCRmyPDF"
+name = "aih-ocr"
+version = "1.0.0"
+description = "AIH-OCR — batch PDF OCR pipeline with Tesseract, PaddleOCR, Calamari and Chrome ScreenAI backends, based on OCRmyPDF"
 readme = "README.md"
 license = "MPL-2.0"
 requires-python = ">=3.11,<3.14"
@@ -59,7 +59,7 @@ keywords = ["PDF", "OCR", "optical character recognition", "PDF/A", "scanning"]
 Upstream = "https://github.com/ocrmypdf/OCRmyPDF"
 
 [project.optional-dependencies]
-# User-installable features - use `uv sync --extra <name>` or `pip install aih-ocrmypdf[name]`
+# User-installable features - use `uv sync --extra <name>` or `pip install aih-ocr[name]`
 watcher = ["watchdog>=1.0.2", "cyclopts>=3", "python-dotenv"]
 # Local PaddleOCR backend (--ocr-engine paddle_ocr, paddle_det line detection).
 # Not installed by default. This is the CPU build of PaddlePaddle from PyPI; for a
@@ -84,8 +84,10 @@ paddlepaddle-gpu = { index = "paddle-cu130", extra = "paddle-gpu" }
 conflicts = [[{ extra = "paddle" }, { extra = "paddle-gpu" }]]
 
 [project.scripts]
+aih-ocr = "ocrmypdf.__main__:run"
 ocrmypdf = "ocrmypdf.__main__:run"
-aih-ocrmypdf-webui = "ocrmypdf.webui_launcher:main"
+aih-ocr-webui = "ocrmypdf.webui_launcher:main"
+aih-ocrmypdf-webui = "ocrmypdf.webui_launcher:main"  # legacy alias
 ocrmypdf-aih-webui = "ocrmypdf.webui_launcher:main"  # legacy alias
 
 [tool.hatch.build.targets.wheel]

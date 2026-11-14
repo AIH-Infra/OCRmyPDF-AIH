@@ -101,7 +101,7 @@ _config = {
     "chrome_screenai_filter_types": "printed",
     "chrome_screenai_text_layer_mode": "native_direct",
     "chrome_screenai_force_horizontal": True,
-    "chrome_screenai_text_cleanup": "mode_default",
+    "chrome_screenai_text_cleanup": "sanitize",
     "chrome_screenai_rasterize_dpi": 300,
     "chrome_screenai_rasterize_quality": 88,
     "paddle_det_model": "PP-OCRv5_server_det",
@@ -752,9 +752,9 @@ def _build_simple_hocr_from_lineboxes(
         "    \"http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd\">\n"
         "<html xmlns=\"http://www.w3.org/1999/xhtml\" xml:lang=\"en\" lang=\"en\">\n"
         "<head>\n"
-        "  <title>AIH-OCRmyPDF Calamari hOCR</title>\n"
+        "  <title>AIH-OCR Calamari hOCR</title>\n"
         "  <meta http-equiv='Content-Type' content='text/html;charset=utf-8'/>\n"
-        "  <meta name='ocr-system' content='AIH-OCRmyPDF Calamari'/>\n"
+        "  <meta name='ocr-system' content='AIH-OCR Calamari'/>\n"
         "</head>\n"
         "<body>\n"
         f"  <div class='ocr_page' id='page_1' title='bbox 0 0 {width} {height}; scan_res {dpi_x} {dpi_y}'>\n"
@@ -2769,7 +2769,7 @@ def add_options(parser):
         "--chrome-screenai-text-layer-mode",
         choices=["native_direct", "proxy_match"],
         default="native_direct",
-        help="Chrome ScreenAI 文本层模式：native_direct 完全直通；proxy_match 由 AIH-OCRmyPDF 代理匹配文本层。",
+        help="Chrome ScreenAI 文本层模式：native_direct 完全直通；proxy_match 由 AIH-OCR 代理匹配文本层。",
     )
     calamari_group.add_argument(
         "--chrome-screenai-force-horizontal",
@@ -2779,9 +2779,9 @@ def add_options(parser):
     )
     calamari_group.add_argument(
         "--chrome-screenai-text-cleanup",
-        choices=["mode_default", "clear_all", "rasterize"],
-        default="mode_default",
-        help="Chrome OCR 前文字层处理：默认按 mode；clear_all 轻量删除全部文字；rasterize 显式栅格化。",
+        choices=["sanitize", "mode_default", "clear_all", "rasterize"],
+        default="sanitize",
+        help="Chrome OCR 前净化：默认保留可见正文和原图，移除隐藏文字及注释；rasterize 显式栅格化。",
     )
     calamari_group.add_argument(
         "--chrome-screenai-rasterize-dpi",
@@ -2944,7 +2944,7 @@ def check_options(options):
     chrome_screenai_filter_types = _get_option(options, "chrome_screenai_filter_types", "printed")
     chrome_screenai_text_layer_mode = _get_option(options, "chrome_screenai_text_layer_mode", "native_direct")
     chrome_screenai_force_horizontal = _get_option(options, "chrome_screenai_force_horizontal", True)
-    chrome_screenai_text_cleanup = _get_option(options, "chrome_screenai_text_cleanup", "mode_default")
+    chrome_screenai_text_cleanup = _get_option(options, "chrome_screenai_text_cleanup", "sanitize")
     chrome_screenai_rasterize_dpi = _get_option(options, "chrome_screenai_rasterize_dpi", 300)
     chrome_screenai_rasterize_quality = _get_option(options, "chrome_screenai_rasterize_quality", 88)
     paddle_det_model = _get_option(options, "calamari_paddle_model", "PP-OCRv5_server_det")
@@ -3001,7 +3001,7 @@ def check_options(options):
     _config["chrome_screenai_filter_types"] = str(chrome_screenai_filter_types or "printed")
     _config["chrome_screenai_text_layer_mode"] = str(chrome_screenai_text_layer_mode or "native_direct")
     _config["chrome_screenai_force_horizontal"] = bool(chrome_screenai_force_horizontal)
-    _config["chrome_screenai_text_cleanup"] = str(chrome_screenai_text_cleanup or "mode_default")
+    _config["chrome_screenai_text_cleanup"] = str(chrome_screenai_text_cleanup or "sanitize")
     _config["chrome_screenai_rasterize_dpi"] = max(72, int(chrome_screenai_rasterize_dpi or 300))
     _config["chrome_screenai_rasterize_quality"] = max(1, min(100, int(chrome_screenai_rasterize_quality or 88)))
     _config["paddle_det_model"] = str(paddle_det_model or "PP-OCRv5_server_det")

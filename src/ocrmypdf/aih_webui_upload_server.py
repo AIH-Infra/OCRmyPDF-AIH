@@ -49,6 +49,22 @@ _server_lock = threading.Lock()
 _server_port = 0
 
 
+class UploadStateConflict(RuntimeError):
+    """Manifest 状态已变化，当前开始/上传操作不能继续。"""
+
+
+class BatchAlreadyRunning(UploadStateConflict):
+    """批次已进入处理，不能再预留上传。"""
+
+
+class UploadInProgress(UploadStateConflict):
+    """批次中仍有未完成上传，不能开始处理。"""
+
+
+class StaleStagedQueue(UploadStateConflict):
+    """UI 提交的队列与当前 manifest 不一致。"""
+
+
 # ---------------------------------------------------------------------------
 # manifest / 批次目录
 # ---------------------------------------------------------------------------
@@ -133,32 +149,65 @@ def get_batch_dir(state: dict, create: bool = False) -> Path | None:
 
 
 def list_staged(state: dict) -> list[dict]:
-    """manifest 中仍存在于磁盘上的暂存文件——排队列表的唯一事实来源。"""
+    """返回已完整写入磁盘的文件；排队列表以 manifest 为唯一事实来源。"""
     batch_dir = get_batch_dir(state)
     if batch_dir is None:
         return []
-    files = load_manifest(batch_dir).get("files", [])
-    return [f for f in files if Path(f["path"]).exists()]
+    staged = []
+    for entry in load_manifest(batch_dir).get("files", []):
+        status = entry.get("status")
+        if status == "uploading":
+            continue
+        if status not in (None, "ready"):
+            continue
+        try:
+            path = Path(entry["path"])
+            complete = path.is_file() and path.stat().st_size == entry["size"]
+        except (OSError, KeyError, TypeError):
+            complete = False
+        if complete:
+            ready = dict(entry)
+            ready["status"] = "ready"
+            staged.append(ready)
+    return staged
+
+
+def uploading_count(state: dict) -> int:
+    """当前 manifest 中已预留、尚未提交的上传数量。"""
+    batch_dir = get_batch_dir(state)
+    if batch_dir is None:
+        return 0
+    return sum(
+        entry.get("status") == "uploading"
+        for entry in load_manifest(batch_dir).get("files", [])
+    )
 
 
 def reserve_input(batch_dir: Path, name: str, size: int) -> Path:
-    """在 manifest 中预留下一个输入槽位（序号前缀保证唯一），返回磁盘路径。
+    """先在 manifest 中预留输入项，再返回独立路径供流式写入。
 
     调用者随后把字节流写入该路径；成功后 ``commit_input``，失败则
-    ``abort_input``。先预留再写，保证并发上传不会撞序号。
+    ``abort_input``。
     """
     safe_name = Path(name).name.strip() or "upload.pdf"
     inputs_dir = Path(batch_dir) / "inputs"
     inputs_dir.mkdir(parents=True, exist_ok=True)
     with _manifest_lock:
         manifest = load_manifest(batch_dir)
+        if manifest.get("status") == "running":
+            raise BatchAlreadyRunning("处理进行中，暂不能上传")
         files = manifest.setdefault("files", [])
-        dest = inputs_dir / f"{len(files):06d}_{safe_name}"
+        existing_paths = {entry.get("path") for entry in files}
+        while True:
+            dest = inputs_dir / f"{secrets.token_hex(12)}_{safe_name}"
+            if str(dest) not in existing_paths and not dest.exists():
+                break
         files.append({
             "name": safe_name,
             "path": str(dest),
             "size": size,
             "staged_at": _now(),
+            "status": "uploading",
         })
         manifest["status"] = "staging"
         save_manifest(batch_dir, manifest)
@@ -168,10 +217,15 @@ def reserve_input(batch_dir: Path, name: str, size: int) -> Path:
 def commit_input(batch_dir: Path, dest: Path, actual_size: int) -> None:
     with _manifest_lock:
         manifest = load_manifest(batch_dir)
+        found = False
         for entry in manifest.get("files", []):
             if entry["path"] == str(dest):
                 entry["size"] = actual_size
+                entry["status"] = "ready"
+                found = True
                 break
+        if not found:
+            raise StaleStagedQueue("上传预留项已不存在")
         save_manifest(batch_dir, manifest)
 
 
@@ -210,32 +264,67 @@ def mark_running(batch_dir: Path, staged: list[dict]) -> None:
     """开始新一轮处理：清掉上一轮残留输出，manifest 转入 running。"""
     batch_dir = Path(batch_dir)
     outputs_dir = batch_dir / "outputs"
-    if outputs_dir.exists():
-        for old in outputs_dir.iterdir():
-            try:
-                old.unlink()
-            except OSError:
-                pass
-    try:
-        (batch_dir / "ocrmypdf_output.zip").unlink()
-    except OSError:
-        pass
     with _manifest_lock:
         manifest = load_manifest(batch_dir)
+        if manifest.get("status") == "running":
+            raise BatchAlreadyRunning("处理已开始")
+        files = manifest.get("files", [])
+        if any(entry.get("status") == "uploading" for entry in files):
+            raise UploadInProgress("仍有文件正在上传")
+
+        current_ready = []
+        for entry in files:
+            status = entry.get("status")
+            if status not in (None, "ready"):
+                raise StaleStagedQueue("暂存队列状态已变化，请刷新后重试")
+            try:
+                path = Path(entry["path"])
+                complete = path.is_file() and path.stat().st_size == entry["size"]
+            except (OSError, KeyError, TypeError):
+                complete = False
+            if not complete:
+                raise StaleStagedQueue("暂存文件已缺失或不完整，请刷新后重试")
+            ready = dict(entry)
+            ready["status"] = "ready"
+            current_ready.append(ready)
+
+        staged_paths = [str(entry.get("path", "")) for entry in staged]
+        current_paths = [entry["path"] for entry in current_ready]
+        if staged_paths != current_paths:
+            raise StaleStagedQueue("暂存队列已变化，请刷新后重试")
+
+        if outputs_dir.exists():
+            for old in outputs_dir.iterdir():
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+        try:
+            (batch_dir / "ocrmypdf_output.zip").unlink()
+        except OSError:
+            pass
         manifest["status"] = "running"
-        manifest["files"] = staged
+        manifest["files"] = current_ready
         save_manifest(batch_dir, manifest)
 
 
-def mark_done(batch_dir: Path) -> None:
-    """整批结束（含停止/出错）：manifest 置 done、文件清单清空。
+def mark_done(batch_dir: Path, retained=None) -> None:
+    """整批结束：manifest 置 done，默认清单清空，可保留重试输入。
 
-    inputs 目录由调用方删除。
+    ``retained`` 为保留输入的路径集合。调用方负责删除未保留输入。
     """
     with _manifest_lock:
         manifest = load_manifest(batch_dir)
         manifest["status"] = "done"
-        manifest["files"] = []
+        if retained is None:
+            manifest["files"] = []
+        else:
+            retained_paths = {str(path) for path in retained}
+            manifest["files"] = [
+                {**entry, "status": "ready"}
+                for entry in manifest.get("files", [])
+                if entry.get("path") in retained_paths
+            ]
         save_manifest(batch_dir, manifest)
 
 
@@ -378,7 +467,10 @@ class _UploadHandler(BaseHTTPRequestHandler):
                 "error": f"磁盘剩余空间不足（{free_gb:.1f} GB < {MIN_FREE_DISK_GB:.0f} GB），请清理后重试",
             })
 
-        dest = reserve_input(batch_dir, name, length)
+        try:
+            dest = reserve_input(batch_dir, name, length)
+        except BatchAlreadyRunning as exc:
+            return self._send(409, {"error": str(exc)})
         committed = False
         try:
             with dest.open("wb") as target:

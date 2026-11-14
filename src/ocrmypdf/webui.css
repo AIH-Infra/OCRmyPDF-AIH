@@ -1,0 +1,330 @@
+/* AIH-OCR Streamlit workbench theme */
+:root {
+  --aih-bg: #faf8f4;
+  --aih-surface: #fffdf9;
+  --aih-surface-muted: #f2eee7;
+  --aih-text: #29231d;
+  --aih-muted: #62584f;
+  --aih-border: #dfd8ce;
+  --aih-primary: #b45309;
+  --aih-primary-hover: #8a3d07;
+  --aih-focus: #b45309;
+  --aih-radius: 12px;
+  --aih-space: 8px;
+}
+
+.stApp,
+[data-testid="stAppViewContainer"] {
+  color: var(--aih-text);
+  background: var(--aih-bg);
+}
+
+main .block-container {
+  padding-top: 1.5rem;
+  padding-bottom: 3rem;
+}
+
+@media (min-width: 1200px) {
+  main .block-container {
+    padding-left: 2.5rem;
+    padding-right: 2.5rem;
+  }
+}
+
+/* Keep the app toolbar and status controls available. */
+header[data-testid="stHeader"] {
+  background: var(--aih-bg);
+}
+
+[data-testid="stAppDeployButton"] {
+  display: none;
+}
+
+section[data-testid="stSidebar"] {
+  background: var(--aih-surface-muted);
+  border-right: 1px solid var(--aih-border);
+}
+
+section[data-testid="stSidebar"] > div:first-child {
+  padding-top: 1rem;
+}
+
+@media (max-width: 768px) {
+  main .block-container {
+    padding: 1rem 1rem 2rem;
+  }
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--aih-text);
+  letter-spacing: -0.02em;
+}
+
+h1 { font-size: clamp(1.65rem, 2.2vw, 2rem); line-height: 1.2; }
+h2 { font-size: 1.35rem; line-height: 1.3; }
+h3 { font-size: 1.1rem; line-height: 1.35; }
+
+p, li, label {
+  color: var(--aih-text);
+}
+
+[data-testid="stCaptionContainer"],
+.stCaption,
+.aih-subtitle,
+.aih-footer {
+  color: var(--aih-muted);
+}
+
+a {
+  color: var(--aih-primary);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+a:hover {
+  color: var(--aih-primary-hover);
+}
+
+hr {
+  border-color: var(--aih-border);
+}
+
+/* Inputs retain Streamlit's semantic disabled and validation states. */
+input, textarea, [data-baseweb="select"] > div, [data-baseweb="input"] > div {
+  border-color: var(--aih-border);
+  border-radius: 8px;
+  background-color: var(--aih-surface);
+}
+
+input:focus-visible,
+textarea:focus-visible,
+button:focus-visible,
+a:focus-visible,
+[role="combobox"]:focus-visible,
+[role="button"]:focus-visible,
+[role="tab"]:focus-visible,
+[data-baseweb="tab"]:focus-visible,
+[data-baseweb="select"]:focus-within,
+[data-baseweb="input"]:focus-within {
+  outline: 3px solid var(--aih-focus);
+  outline-offset: 2px;
+}
+
+/* Border-enabled Streamlit containers form the workbench panels. */
+div[data-testid="stVerticalBlockBorderWrapper"] {
+  border: 1px solid var(--aih-border);
+  border-radius: var(--aih-radius);
+  background: var(--aih-surface);
+}
+
+/* Tabs remain visibly selected and keyboard reachable. */
+div[data-testid="stTabs"] [data-baseweb="tab-list"] {
+  gap: var(--aih-space);
+  border-bottom: 1px solid var(--aih-border);
+}
+
+div[data-testid="stTabs"] [data-baseweb="tab"] {
+  min-height: 40px;
+  padding: 8px 12px;
+  border-radius: 8px 8px 0 0;
+  color: var(--aih-muted);
+}
+
+div[data-testid="stTabs"] [data-baseweb="tab"][aria-selected="true"] {
+  color: var(--aih-primary);
+  font-weight: 650;
+}
+
+/* Primary work action: clear hover, pressed, focus, and disabled feedback. */
+div[data-testid="stButton"] button[kind="primary"] {
+  color: #fff;
+  background: var(--aih-primary);
+  border: 1px solid var(--aih-primary);
+  border-radius: 9px;
+  font-weight: 650;
+  transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
+}
+
+div[data-testid="stButton"] button[kind="primary"]:hover:not(:disabled) {
+  color: #fff;
+  background: var(--aih-primary-hover);
+  border-color: var(--aih-primary-hover);
+}
+
+div[data-testid="stButton"] button[kind="primary"]:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+div[data-testid="stButton"] button[kind="primary"]:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+div[data-testid="stDownloadButton"] button {
+  color: var(--aih-primary);
+  background: var(--aih-surface);
+  border: 1px solid var(--aih-primary);
+  border-radius: 9px;
+  font-weight: 600;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+div[data-testid="stDownloadButton"] button:hover:not(:disabled) {
+  color: var(--aih-primary-hover);
+  background: #fff2df;
+  border-color: var(--aih-primary-hover);
+}
+
+div[data-testid="stDownloadButton"] button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* Active processing progress uses the same accessible primary color. */
+.stProgress > div > div > div {
+  background-color: var(--aih-primary);
+}
+
+div[data-testid="stFileUploader"] {
+  border-radius: var(--aih-radius);
+}
+
+div[data-testid="stFileUploader"] section {
+  border-color: var(--aih-border);
+  border-radius: var(--aih-radius);
+  background: var(--aih-surface);
+}
+
+/* Compact brand header and reusable content blocks used by the UI. */
+.aih-header {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--aih-space) * 2);
+  margin: 0 0 calc(var(--aih-space) * 2);
+}
+
+.aih-brand-mark {
+  display: block;
+  width: 88px;
+  height: 88px;
+  flex: 0 0 88px;
+  object-fit: contain;
+  border-radius: 0;
+  background: #fff;
+}
+
+.aih-eyebrow {
+  margin: 0 0 var(--aih-space);
+  color: var(--aih-primary);
+  font-size: 0.72rem;
+  font-weight: 750;
+  letter-spacing: 0.12em;
+  line-height: 1.3;
+  text-transform: uppercase;
+}
+
+.aih-subtitle {
+  margin-top: 4px;
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+
+.aih-header h1 {
+  margin: 0;
+  padding: 0;
+  font-size: 1.85rem;
+  line-height: 1.2;
+}
+
+.stApp h3 {
+  padding-top: 0.5rem;
+  padding-bottom: 0.5rem;
+  font-size: 1.15rem;
+  line-height: 1.4;
+}
+
+.aih-header .aih-subtitle {
+  margin-bottom: 0;
+}
+
+.aih-step,
+.aih-summary {
+  padding: calc(var(--aih-space) * 2);
+  border: 1px solid var(--aih-border);
+  border-radius: var(--aih-radius);
+  background: var(--aih-surface);
+}
+
+.aih-step {
+  border-left: 3px solid var(--aih-primary);
+}
+
+.aih-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 24px;
+  box-shadow: 0 1px 2px rgb(41 35 29 / 5%);
+}
+
+.aih-summary span,
+.aih-summary strong {
+  display: block;
+  overflow-wrap: anywhere;
+}
+
+.aih-summary span {
+  color: var(--aih-muted);
+  font-size: 0.78rem;
+  margin-bottom: 4px;
+}
+
+.aih-summary strong {
+  color: var(--aih-text);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+[data-testid="stMainBlockContainer"] {
+  padding-top: 2.5rem;
+  padding-bottom: 2rem;
+  max-width: 1560px;
+}
+
+@media (max-width: 900px) {
+  [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] {
+    flex-direction: column;
+  }
+  [data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] > [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+    width: 100%;
+    flex: 1 1 auto;
+  }
+}
+
+@media (max-width: 480px) {
+  .aih-brand-mark {
+    width: 72px;
+    height: 72px;
+    flex-basis: 72px;
+  }
+  .aih-summary {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .aih-eyebrow {
+    font-size: 0.65rem;
+  }
+}
+
+.aih-footer {
+  margin-top: calc(var(--aih-space) * 3);
+  padding-top: calc(var(--aih-space) * 2);
+  border-top: 1px solid var(--aih-border);
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+}

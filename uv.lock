@@ -2,29 +2,29 @@ version = 1
 revision = 3
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
-    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')",
-    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')",
-    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu')",
-    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu')",
-    "python_full_version >= '3.12' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "python_full_version < '3.12' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu'",
+    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu'",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu'",
+    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu'",
+    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu'",
+    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu'",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu')",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu'",
+    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu'",
+    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu')",
+    "python_full_version >= '3.12' and extra != 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu'",
+    "python_full_version < '3.12' and extra != 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu'",
 ]
 conflicts = [[
-    { package = "aih-ocrmypdf", extra = "paddle" },
-    { package = "aih-ocrmypdf", extra = "paddle-gpu" },
+    { package = "aih-ocr", extra = "paddle" },
+    { package = "aih-ocr", extra = "paddle-gpu" },
 ]]
 
 [[package]]
-name = "aih-ocrmypdf"
-version = "0.9.0"
+name = "aih-ocr"
+version = "1.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "beautifulsoup4" },
@@ -73,8 +73,8 @@ dev = [
 ]
 docs = [
     { name = "myst-parser" },
-    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
     { name = "sphinx-issues" },
     { name = "sphinx-rtd-theme" },
     { name = "sphinxcontrib-mermaid" },
@@ -109,7 +109,7 @@ requires-dist = [
     { name = "paddleocr", marker = "extra == 'paddle'", specifier = ">=3.7,<3.8" },
     { name = "paddleocr", marker = "extra == 'paddle-gpu'", specifier = ">=3.7,<3.8" },
     { name = "paddlepaddle", marker = "extra == 'paddle'", specifier = ">=3.3,<4" },
-    { name = "paddlepaddle-gpu", marker = "extra == 'paddle-gpu'", specifier = ">=3.3,<4", index = "https://www.paddlepaddle.org.cn/packages/stable/cu130/", conflict = { package = "aih-ocrmypdf", extra = "paddle-gpu" } },
+    { name = "paddlepaddle-gpu", marker = "extra == 'paddle-gpu'", specifier = ">=3.3,<4", index = "https://www.paddlepaddle.org.cn/packages/stable/cu130/", conflict = { package = "aih-ocr", extra = "paddle-gpu" } },
     { name = "pdfminer-six", specifier = ">=20220319" },
     { name = "pi-heif" },
     { name = "pikepdf", specifier = ">=10" },
@@ -418,7 +418,7 @@ name = "cffi"
 version = "2.0.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/eb/56/b1ba7935a17738ae8453301356628e8147c79dbb825bcbc73dc7401f9846/cffi-2.0.0.tar.gz", hash = "sha256:44d1b5909021139fe36001ae048dbdde8214afa20200eda0f64c068cac5d5529", size = 523588, upload-time = "2025-09-08T23:24:04.541Z" }
 wheels = [
@@ -655,7 +655,7 @@ wheels = [
 
 [package.optional-dependencies]
 toml = [
-    { name = "tomli", marker = "python_full_version <= '3.11' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "tomli", marker = "python_full_version <= '3.11' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 
 [[package]]
@@ -712,7 +712,7 @@ name = "cryptography"
 version = "46.0.5"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/60/04/ee2a9e8542e4fa2773b81771ff8349ff19cdd56b7258a0cc442639052edb/cryptography-46.0.5.tar.gz", hash = "sha256:abace499247268e3757271b2f1e244b36b06f8515cf27c4d49468fc9eb16e93d", size = 750064, upload-time = "2026-02-10T19:18:38.255Z" }
 wheels = [
@@ -1291,7 +1291,7 @@ name = "ipykernel"
 version = "7.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "appnope", marker = "sys_platform == 'darwin' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "appnope", marker = "sys_platform == 'darwin' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
     { name = "comm" },
     { name = "debugpy" },
     { name = "ipython" },
@@ -1315,17 +1315,17 @@ name = "ipython"
 version = "9.10.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
     { name = "decorator" },
     { name = "ipython-pygments-lexers" },
     { name = "jedi" },
     { name = "matplotlib-inline" },
-    { name = "pexpect", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu') or (sys_platform == 'win32' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "pexpect", marker = "(sys_platform != 'emscripten' and sys_platform != 'win32') or (sys_platform == 'emscripten' and extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu') or (sys_platform == 'win32' and extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
     { name = "prompt-toolkit" },
     { name = "pygments" },
     { name = "stack-data" },
     { name = "traitlets" },
-    { name = "typing-extensions", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/a6/60/2111715ea11f39b1535bed6024b7dec7918b71e5e5d30855a5b503056b50/ipython-9.10.0.tar.gz", hash = "sha256:cd9e656be97618a0676d058134cd44e6dc7012c0e5cb36a9ce96a8c904adaf77", size = 4426526, upload-time = "2026-02-02T10:00:33.594Z" }
 wheels = [
@@ -1739,7 +1739,7 @@ name = "mypy"
 version = "1.19.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "librt", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "librt", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
     { name = "mypy-extensions" },
     { name = "pathspec" },
     { name = "typing-extensions" },
@@ -1786,8 +1786,8 @@ dependencies = [
     { name = "markdown-it-py" },
     { name = "mdit-py-plugins" },
     { name = "pyyaml" },
-    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/33/fa/7b45eef11b7971f0beb29d27b7bfe0d747d063aa29e170d9edd004733c8a/myst_parser-5.0.0.tar.gz", hash = "sha256:f6f231452c56e8baa662cc352c548158f6a16fcbd6e3800fc594978002b94f3a", size = 98535, upload-time = "2026-01-15T09:08:18.036Z" }
 wheels = [
@@ -2127,7 +2127,7 @@ version = "3.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
-    { name = "paddlex", extra = ["ocr-core"], marker = "extra == 'extra-12-aih-ocrmypdf-paddle' or extra == 'extra-12-aih-ocrmypdf-paddle-gpu'" },
+    { name = "paddlex", extra = ["ocr-core"], marker = "extra == 'extra-7-aih-ocr-paddle' or extra == 'extra-7-aih-ocr-paddle-gpu'" },
     { name = "pyyaml" },
     { name = "requests" },
     { name = "typing-extensions" },
@@ -2143,8 +2143,8 @@ version = "3.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-12-aih-ocrmypdf-paddle') or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-12-aih-ocrmypdf-paddle') or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-7-aih-ocr-paddle') or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-7-aih-ocr-paddle') or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
     { name = "numpy" },
     { name = "opt-einsum" },
     { name = "pillow" },
@@ -2171,10 +2171,10 @@ version = "3.4.0"
 source = { registry = "https://www.paddlepaddle.org.cn/packages/stable/cu130/" }
 dependencies = [
     { name = "cuda-python", marker = "sys_platform == 'linux'" },
-    { name = "cuda-toolkit", extra = ["cccl", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu') or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "cuda-toolkit", extra = ["cccl", "cudart", "cufft", "cufile", "cupti", "curand", "cusolver", "cusparse", "nvjitlink", "nvrtc", "nvtx"], marker = "(sys_platform == 'linux' and extra == 'extra-7-aih-ocr-paddle-gpu') or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
     { name = "httpx" },
-    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu') or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu') or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "networkx", version = "3.6.1", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-7-aih-ocr-paddle-gpu') or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "networkx", version = "3.7", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and extra == 'extra-7-aih-ocr-paddle-gpu') or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
     { name = "numpy" },
     { name = "nvidia-cublas", marker = "sys_platform == 'linux'" },
     { name = "nvidia-cudnn-cu13", marker = "sys_platform == 'linux'" },
@@ -2872,7 +2872,7 @@ name = "pytest"
 version = "9.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
@@ -3054,7 +3054,7 @@ name = "pyzmq"
 version = "27.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "implementation_name == 'pypy' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "cffi", marker = "implementation_name == 'pypy' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/04/0b/3c9baedbdf613ecaa7aa07027780b8867f57b6293b6ee50de316c9f3222b/pyzmq-27.1.0.tar.gz", hash = "sha256:ac0765e3d44455adb6ddbf4417dcce460fc40a05978c08efdf2948072f6db540", size = 281750, upload-time = "2025-09-08T23:10:18.157Z" }
 wheels = [
@@ -3104,7 +3104,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "rpds-py" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/f5/df4e9027acead3ecc63e50fe1e36aca1523e1719559c499951bb4b53188f/referencing-0.37.0.tar.gz", hash = "sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8", size = 78036, upload-time = "2025-10-13T15:30:48.871Z" }
 wheels = [
@@ -3383,32 +3383,32 @@ name = "sphinx"
 version = "9.0.4"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')",
-    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu')",
-    "python_full_version < '3.12' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu'",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu'",
+    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu'",
+    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')",
+    "python_full_version < '3.12' and sys_platform == 'darwin' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu'",
+    "python_full_version < '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu'",
+    "(python_full_version < '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu') or (python_full_version < '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu')",
+    "python_full_version < '3.12' and extra != 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu'",
 ]
 dependencies = [
-    { name = "alabaster", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "babel", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "colorama", marker = "(python_full_version < '3.12' and sys_platform == 'win32') or (python_full_version >= '3.12' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu') or (sys_platform != 'win32' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "docutils", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "imagesize", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "jinja2", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "packaging", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "pygments", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "requests", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "roman-numerals", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "snowballstemmer", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinxcontrib-applehelp", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinxcontrib-devhelp", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinxcontrib-htmlhelp", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinxcontrib-jsmath", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinxcontrib-qthelp", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinxcontrib-serializinghtml", marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "alabaster", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "babel", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "colorama", marker = "(python_full_version < '3.12' and sys_platform == 'win32') or (python_full_version >= '3.12' and extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu') or (sys_platform != 'win32' and extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "docutils", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "imagesize", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "jinja2", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "packaging", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "pygments", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "requests", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "roman-numerals", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "snowballstemmer", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinxcontrib-applehelp", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinxcontrib-devhelp", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinxcontrib-htmlhelp", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinxcontrib-jsmath", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinxcontrib-qthelp", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinxcontrib-serializinghtml", marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/42/50/a8c6ccc36d5eacdfd7913ddccd15a9cee03ecafc5ee2bc40e1f168d85022/sphinx-9.0.4.tar.gz", hash = "sha256:594ef59d042972abbc581d8baa577404abe4e6c3b04ef61bd7fc2acbd51f3fa3", size = 8710502, upload-time = "2025-12-04T07:45:27.343Z" }
 wheels = [
@@ -3420,32 +3420,32 @@ name = "sphinx"
 version = "9.1.0"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
-    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')",
-    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu'",
-    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu')",
-    "python_full_version >= '3.12' and extra != 'extra-12-aih-ocrmypdf-paddle' and extra != 'extra-12-aih-ocrmypdf-paddle-gpu'",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu'",
+    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu'",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra != 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')",
+    "python_full_version >= '3.12' and sys_platform == 'darwin' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu'",
+    "python_full_version >= '3.12' and platform_machine == 'aarch64' and sys_platform == 'linux' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu'",
+    "(python_full_version >= '3.12' and platform_machine != 'aarch64' and sys_platform == 'linux' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu') or (python_full_version >= '3.12' and sys_platform != 'darwin' and sys_platform != 'linux' and extra == 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu')",
+    "python_full_version >= '3.12' and extra != 'extra-7-aih-ocr-paddle' and extra != 'extra-7-aih-ocr-paddle-gpu'",
 ]
 dependencies = [
-    { name = "alabaster", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "babel", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "colorama", marker = "(python_full_version >= '3.12' and sys_platform == 'win32') or (python_full_version < '3.12' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu') or (sys_platform != 'win32' and extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "docutils", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "imagesize", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "jinja2", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "packaging", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "pygments", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "requests", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "roman-numerals", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "snowballstemmer", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinxcontrib-applehelp", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinxcontrib-devhelp", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinxcontrib-htmlhelp", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinxcontrib-jsmath", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinxcontrib-qthelp", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinxcontrib-serializinghtml", marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "alabaster", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "babel", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "colorama", marker = "(python_full_version >= '3.12' and sys_platform == 'win32') or (python_full_version < '3.12' and extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu') or (sys_platform != 'win32' and extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "docutils", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "imagesize", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "jinja2", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "packaging", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "pygments", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "requests", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "roman-numerals", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "snowballstemmer", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinxcontrib-applehelp", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinxcontrib-devhelp", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinxcontrib-htmlhelp", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinxcontrib-jsmath", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinxcontrib-qthelp", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinxcontrib-serializinghtml", marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cd/bd/f08eb0f4eed5c83f1ba2a3bd18f7745a2b1525fad70660a1c00224ec468a/sphinx-9.1.0.tar.gz", hash = "sha256:7741722357dd75f8190766926071fed3bdc211c74dd2d7d4df5404da95930ddb", size = 8718324, upload-time = "2025-12-31T15:09:27.646Z" }
 wheels = [
@@ -3457,8 +3457,8 @@ name = "sphinx-issues"
 version = "5.0.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/3a/62/b55f1c482ce20acee71185dbebf0497a48d23b325b48925d95d5ce0e4666/sphinx_issues-5.0.1.tar.gz", hash = "sha256:6da131d4545af00be4b48ec7c4086ea82c1371a05116bbe5779f57cff34bf16a", size = 14370, upload-time = "2025-04-10T13:41:41.945Z" }
 wheels = [
@@ -3471,8 +3471,8 @@ version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "docutils" },
-    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
     { name = "sphinxcontrib-jquery" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/84/68/a1bfbf38c0f7bccc9b10bbf76b94606f64acb1552ae394f0b8285bfaea25/sphinx_rtd_theme-3.1.0.tar.gz", hash = "sha256:b44276f2c276e909239a4f6c955aa667aaafeb78597923b1c60babc76db78e4c", size = 7620915, upload-time = "2026-01-12T16:03:31.17Z" }
@@ -3512,8 +3512,8 @@ name = "sphinxcontrib-jquery"
 version = "4.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/de/f3/aa67467e051df70a6330fe7770894b3e4f09436dea6881ae0b4f3d87cad8/sphinxcontrib-jquery-4.1.tar.gz", hash = "sha256:1620739f04e36a2c779f1a131a2dfd49b2fd07351bf1968ced074365933abc7a", size = 122331, upload-time = "2023-03-14T15:01:01.944Z" }
 wheels = [
@@ -3536,8 +3536,8 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jinja2" },
     { name = "pyyaml" },
-    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
-    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "sphinx", version = "9.0.4", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
+    { name = "sphinx", version = "9.1.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/96/a5/65a5c439cc14ba80483b9891e9350f11efb80cd3bdccb222f0c738068c78/sphinxcontrib_mermaid-2.0.0.tar.gz", hash = "sha256:cf4f7d453d001132eaba5d1fdf53d42049f02e913213cf8337427483bfca26f4", size = 18194, upload-time = "2026-01-13T17:13:42.563Z" }
 wheels = [
@@ -3598,7 +3598,7 @@ dependencies = [
     { name = "toml" },
     { name = "tornado" },
     { name = "typing-extensions" },
-    { name = "watchdog", marker = "sys_platform != 'darwin' or (extra == 'extra-12-aih-ocrmypdf-paddle' and extra == 'extra-12-aih-ocrmypdf-paddle-gpu')" },
+    { name = "watchdog", marker = "sys_platform != 'darwin' or (extra == 'extra-7-aih-ocr-paddle' and extra == 'extra-7-aih-ocr-paddle-gpu')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/be/66/d887ee80ea85f035baee607c60af024994e17ae9b921277fca9675e76ecf/streamlit-1.54.0.tar.gz", hash = "sha256:09965e6ae7eb0357091725de1ce2a3f7e4be155c2464c505c40a3da77ab69dd8", size = 8662292, upload-time = "2026-02-04T16:37:54.734Z" }
 wheels = [

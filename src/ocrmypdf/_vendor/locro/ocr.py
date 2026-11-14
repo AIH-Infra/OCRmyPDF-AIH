@@ -649,6 +649,66 @@ def _lines_to_page(
     )
 
 
+class _TextOverlayCoverage:
+    """Index existing visible glyphs and new words in PDF point coordinates."""
+    _CELL = 32
+
+    def __init__(self, page):
+        import fitz
+        self.rectangles = []
+        self.grid = defaultdict(set)
+        self.inserted = defaultdict(list)
+        for span in page.get_texttrace():
+            if span["type"] not in (0, 1) or span.get("opacity", 1) <= 0:
+                continue
+            for char in span["chars"]:
+                if chr(char[0]).isspace():
+                    continue
+                rect = fitz.Rect(char[3]) + (-1, -1, 1, 1)
+                if rect.is_empty:
+                    continue
+                index = len(self.rectangles)
+                self.rectangles.append(rect)
+                for cell in self._cells(rect):
+                    self.grid[cell].add(index)
+
+    def _cells(self, rect):
+        import math
+        for x in range(math.floor(rect.x0 / self._CELL), math.floor(rect.x1 / self._CELL) + 1):
+            for y in range(math.floor(rect.y0 / self._CELL), math.floor(rect.y1 / self._CELL) + 1):
+                yield x, y
+
+    @staticmethod
+    def _key(text):
+        import unicodedata
+        return "".join(unicodedata.normalize("NFKC", text).casefold().split())
+
+    def skip(self, rect, text):
+        area = rect.get_area()
+        if area <= 0:
+            return True
+        candidates = set()
+        for cell in self._cells(rect):
+            candidates.update(self.grid.get(cell, ()))
+        intersections = [rect & self.rectangles[i] for i in candidates if rect.intersects(self.rectangles[i])]
+        # Union the rectangles: overlapping glyph boxes must not count twice.
+        edges = sorted({x for box in intersections for x in (box.x0, box.x1)})
+        covered = 0
+        for left, right in zip(edges, edges[1:]):
+            intervals = sorted((box.y0, box.y1) for box in intersections if box.x0 < right and box.x1 > left)
+            end = float("-inf")
+            for low, high in intervals:
+                covered += (right - left) * max(0, high - max(low, end))
+                end = max(end, high)
+        if covered >= area * 0.5:
+            return True
+        return any((rect & old).get_area() >= 0.7 * min(area, old.get_area())
+                   for old in self.inserted[self._key(text)])
+
+    def record(self, rect, text):
+        self.inserted[self._key(text)].append(rect)
+
+
 def _overlay_text(
     page,  # fitz.Page
     lines: list[LineResult],
@@ -662,6 +722,7 @@ def _overlay_text(
     import fitz  # noqa: F811
 
     scripts_used: set[str] = set()
+    coverage = _TextOverlayCoverage(page)
     for ln in lines:
         for w in ln.words:
             if not w.text or not w.width:
@@ -671,7 +732,11 @@ def _overlay_text(
             y0 = w.y * sy
             x1 = (w.x + w.width) * sx
             y1 = (w.y + w.height) * sy
-            script = _insert_invisible_word(page, fitz.Rect(x0, y0, x1, y1), w.text)
+            rect = fitz.Rect(x0, y0, x1, y1)
+            if coverage.skip(rect, w.text):
+                continue
+            script = _insert_invisible_word(page, rect, w.text)
+            coverage.record(rect, w.text)
             if script:
                 scripts_used.add(script)
     return scripts_used

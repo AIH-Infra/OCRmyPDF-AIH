@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Shared fixtures for the AIH-OCRmyPDF CLI tests.
+"""Shared fixtures for the AIH-OCR CLI tests.
 
 The suite is split in two layers:
 

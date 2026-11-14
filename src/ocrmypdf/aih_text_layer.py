@@ -232,6 +232,169 @@ def strip_hidden_text_layer(
     return report
 
 
+def _sanitize_stream(pdf, container, resources, inherited=None, ancestors=frozenset()):
+    """Rewrite one invocation, isolating shared Forms before changing their text."""
+    state = inherited.copy() if inherited else _GraphicsState()
+    stack, output = [], []
+    removed = 0
+    pending_advance = False
+    for operands, operator in parse_content_stream(container, ""):
+        op = str(operator)
+        if op == "q":
+            stack.append(state.copy())
+        elif op == "Q" and stack:
+            state = stack.pop()
+        elif op == "Tr":
+            state.render_mode = int(operands[0])
+        elif op == "gs":
+            _apply_extgstate(state, resources, operands[0])
+        if op in _TEXT_POSITION_OPERATORS or op == "BT":
+            pending_advance = False
+        if op in _TEXT_SHOW_OPERATORS:
+            if _is_invisible_text_state(state):
+                removed += 1
+                if op == "'":
+                    output.append(([], Operator("T*")))
+                elif op == '"':
+                    output.extend([([operands[0]], Operator("Tw")),
+                                   ([operands[1]], Operator("Tc")), ([], Operator("T*"))])
+                pending_advance = True
+                continue
+            if pending_advance and op not in ("'", '"'):
+                raise ValueError("隐藏文字与可见正文共用连续字距，无法在保持正文位置的同时清除；请单独处理该 PDF。")
+            pending_advance = False
+        if op == "Do":
+            xobjects = resources.get(Name.XObject, Dictionary())
+            form = xobjects.get(operands[0])
+            if isinstance(form, Stream) and form.get(Name.Subtype) == Name.Form:
+                identity = tuple(form.objgen)
+                if identity in ancestors:
+                    raise ValueError("PDF 的 Form 对象包含循环引用，无法可靠净化。")
+                clone = Stream(pdf, form.read_bytes())
+                for key, value in form.items():
+                    if key not in (Name.Length, Name.Filter, Name.DecodeParms, Name.Resources):
+                        clone[key] = value
+                child_resources = Dictionary(_get_resources(form, fallback=resources))
+                clone.Resources = child_resources
+                count = _sanitize_stream(pdf, clone, child_resources, state, ancestors | {identity})
+                if count:
+                    xobjects = Dictionary(xobjects)
+                    name = Name(f"/AIHClean{len(xobjects)}")
+                    while name in xobjects:
+                        name = Name(str(name) + "x")
+                    xobjects[name] = clone
+                    resources.XObject = xobjects
+                    operands = [name]
+                    removed += count
+        output.append((operands, operator))
+    if removed:
+        content = unparse_content_stream(output)
+        if isinstance(container, Stream):
+            container.write(content)
+        else:
+            container.obj.Contents = Stream(pdf, content)
+    return removed
+
+
+def _visible_text_signature(page):
+    signature = []
+    hidden = 0
+    for trace in page.get_texttrace():
+        visible = trace["type"] in (0, 1) and trace.get("opacity", 1) > 0
+        if not visible:
+            hidden += len(trace["chars"])
+            continue
+        for char in trace["chars"]:
+            signature.append((char[0], tuple(round(v, 4) for v in char[2]),
+                              tuple(round(v, 4) for v in char[3])))
+    return signature, hidden
+
+
+def sanitize_pdf_for_screenai(input_pdf, output_pdf, *, pages=None):
+    """Remove hidden text and annotations losslessly; never overwrite the input."""
+    import shutil
+    import tempfile
+    import fitz
+    from pikepdf import Array, ObjectStreamMode
+
+    source, target = Path(input_pdf), Path(output_pdf)
+    if source.resolve() == target.resolve():
+        raise ValueError("Refusing to overwrite the source PDF")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with fitz.open(source) as original:
+        selected = _normalise_pages(pages, len(original))
+        before = {}
+        for n in selected:
+            page = original[n - 1]
+            for widget in list(page.widgets() or []):
+                page.delete_widget(widget)
+            while page.first_annot:
+                page.delete_annot(page.first_annot)
+            page = original.reload_page(page)
+            before[n] = _visible_text_signature(page)[0]
+    removed_text = removed_annotations = 0
+    with Pdf.open(source) as pdf:
+        removed_widgets = set()
+        for n in selected:
+            page = pdf.pages[n - 1]
+            annotations = page.obj.get(Name.Annots, [])
+            removed_annotations += len(annotations)
+            removed_widgets.update(tuple(a.objgen) for a in annotations)
+            if Name.Annots in page.obj:
+                del page.obj.Annots
+            resource_owner = page.obj
+            while Name.Resources not in resource_owner and Name.Parent in resource_owner:
+                resource_owner = resource_owner.Parent
+            resources = Dictionary(_get_resources(resource_owner))
+            page.obj.Resources = resources
+            removed_text += _sanitize_stream(pdf, page, resources)
+        if Name.AcroForm in pdf.Root:
+            if len(selected) == len(pdf.pages):
+                del pdf.Root.AcroForm
+            else:
+                def keep_fields(fields):
+                    kept = []
+                    for field in fields:
+                        if tuple(field.objgen) in removed_widgets:
+                            continue
+                        if Name.Kids in field:
+                            children = keep_fields(field.Kids)
+                            if not children:
+                                continue
+                            field.Kids = Array(children)
+                        kept.append(field)
+                    return kept
+                pdf.Root.AcroForm.Fields = Array(keep_fields(pdf.Root.AcroForm.get(Name.Fields, [])))
+        if not removed_text and not removed_annotations:
+            shutil.copyfile(source, target)
+        else:
+            pdf.remove_unreferenced_resources()
+            with tempfile.TemporaryDirectory(dir=target.parent) as temporary:
+                candidates = []
+                for mode in (ObjectStreamMode.preserve, ObjectStreamMode.generate):
+                    candidate = Path(temporary) / f"{mode.name}.pdf"
+                    pdf.save(candidate, compress_streams=True, object_stream_mode=mode)
+                    candidates.append(candidate)
+                smallest = min(candidates, key=lambda p: p.stat().st_size)
+                if smallest.stat().st_size > source.stat().st_size:
+                    raise ValueError("无损净化后的文件仍大于原文件；为遵守不增大体积的设置，已停止处理，原文件保持不变。")
+                shutil.copyfile(smallest, target)
+    try:
+        with fitz.open(target) as cleaned:
+            for n in selected:
+                visible, hidden = _visible_text_signature(cleaned[n - 1])
+                if visible != before[n]:
+                    raise ValueError(f"第 {n} 页可见正文发生变化，净化已停止。")
+                if hidden:
+                    raise ValueError(f"第 {n} 页仍有无法无损移除的特殊隐藏文字，净化已停止。")
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    return {"selected_pages": selected, "hidden_operations_removed": removed_text,
+            "annotations_removed": removed_annotations,
+            "input_bytes": source.stat().st_size, "output_bytes": target.stat().st_size}
+
+
 def _try_classify(path: Path, pages: list[int]) -> dict[int, dict[str, Any]] | None:
     try:
         return classify_text_layers(path, pages)

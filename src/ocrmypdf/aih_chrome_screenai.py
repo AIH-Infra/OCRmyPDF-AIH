@@ -28,6 +28,46 @@ from ocrmypdf.hocrtransform import Baseline, BoundingBox, OcrClass, OcrElement
 _PROGRESS_STATE_KEY = "_ocrmypdf_page_progress_state"
 
 
+def scan_screenai_environment() -> dict[str, Any]:
+    """Inspect the files selected by the OCR runtime without loading its library."""
+    from ocrmypdf._vendor.locro._dll import find_screen_ai_dir
+    from ocrmypdf._vendor.locro._platform import LIB_NAME, chrome_component_bases, default_model_dir
+
+    result = {"directory": None, "version": None, "library": LIB_NAME,
+              "model_file_count": 0, "missing": [], "error": None,
+              "search_roots": [str(p) for p in [*chrome_component_bases(), default_model_dir()]]}
+    try:
+        directory = find_screen_ai_dir().resolve()
+    except FileNotFoundError:
+        result["error"] = "未发现 ScreenAI 组件。请安装 Chrome Screen AI 组件或本地 locro 模型后重新扫描。"
+        return result
+    except OSError as exc:
+        result["error"] = f"ScreenAI 目录扫描失败：{exc}"
+        return result
+    result["directory"] = str(directory)
+    try:
+        manifest = directory / "manifest.json"
+        if manifest.is_file():
+            metadata = json.loads(manifest.read_text(encoding="utf-8"))
+            if not isinstance(metadata, dict):
+                raise ValueError("manifest.json 应为 JSON 对象")
+            result["version"] = metadata.get("version")
+        catalog = directory / "files_list_ocr.txt"
+        files = list(dict.fromkeys(line.strip() for line in catalog.read_text(encoding="utf-8").splitlines() if line.strip()))
+        if not files:
+            raise ValueError("OCR 模型文件清单为空")
+        for name in [LIB_NAME, *files]:
+            file = (directory / name).resolve()
+            if not file.is_relative_to(directory):
+                raise ValueError(f"模型清单路径超出组件目录：{name}")
+            if not file.is_file() or file.stat().st_size == 0:
+                result["missing"].append(name)
+        result["model_file_count"] = len(files)
+    except (OSError, ValueError) as exc:
+        result["error"] = f"ScreenAI 文件检查失败：{exc}"
+    return result
+
+
 class ChromeScreenAIBackend:
     """Thin adapter around the local locro ScreenAI wrapper."""
 

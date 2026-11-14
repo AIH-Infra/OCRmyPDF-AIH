@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# AIH-OCRmyPDF Start Script (macOS/Linux)
+# AIH-OCR Start Script (macOS/Linux)
 
 cd "$(dirname "$0")"
 
@@ -9,7 +9,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 echo ""
 echo "=========================================="
-echo "  AIH-OCRmyPDF Starting..."
+echo "  AIH-OCR Starting..."
 echo "  Batch PDF OCR Pipeline"
 echo "=========================================="
 echo ""

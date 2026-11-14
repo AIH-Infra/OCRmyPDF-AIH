@@ -34,7 +34,8 @@ class TestErrorsAndHelp:
     def test_version(self):
         r = run_cli("--version")
         assert r.returncode == 0
-        assert r.stdout_text.strip().startswith("0.9")
+        from ocrmypdf._version import __version__
+        assert r.stdout_text.strip() == __version__
 
     def test_unreachable_calamari_reports_clearly(self, sample_pdf, tmp_path):
         r = run_cli(
@@ -164,4 +165,4 @@ class TestPaddleOcr:
         # Either a real fallback environment is found (then it succeeds) or the
         # message must tell the user how to install the optional extra.
         if r.returncode != 0:
-            assert "aih-ocrmypdf[paddle]" in r.stderr
+            assert "aih-ocr[paddle]" in r.stderr

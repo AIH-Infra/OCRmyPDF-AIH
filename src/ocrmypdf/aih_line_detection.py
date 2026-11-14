@@ -31,6 +31,10 @@ class PaddleEnv:
     source: str
 
 
+class PaddleEnvironmentError(RuntimeError):
+    """An explicitly configured PaddleOCR environment is invalid or unusable."""
+
+
 def detect_lines_paddle_det(
     image_path: Path,
     *,
@@ -44,7 +48,7 @@ def detect_lines_paddle_det(
 ) -> list[LineBox]:
     """Detect text lines with PaddleOCR TextDetection.
 
-    Prefer an external PaddleOCR venv when available. This keeps AIH-OCRmyPDF's
+    Prefer an external PaddleOCR venv when available. This keeps AIH-OCR's
     own environment clean while letting the detector use the already-installed
     Paddle GPU stack and cached PP-OCRv5 model.
     """
@@ -84,68 +88,102 @@ def discover_paddle_env(
     4. common virtualenv names under those source trees
     5. PATH/current Python if they can import paddleocr
     """
-    return _discover_paddle_env_cached(
-        str(paddle_python or ""),
-        str(paddle_source_dir or ""),
-        os.environ.get("AIH_PADDLE_PYTHON", ""),
-        os.environ.get("AIH_PADDLE_SOURCE_DIR", ""),
-    )
+    explicit_python = _path_or_none(paddle_python)
+    explicit_source = _path_or_none(paddle_source_dir)
+    env_python = _path_or_none(os.environ.get("AIH_PADDLE_PYTHON", ""))
+    env_source = _path_or_none(os.environ.get("AIH_PADDLE_SOURCE_DIR", ""))
+
+    if explicit_python or explicit_source:
+        return _discover_configured_paddle_env(
+            explicit_python, explicit_source, "explicit"
+        )
+    if env_python or env_source:
+        return _discover_configured_paddle_env(env_python, env_source, "environment")
+    return _discover_paddle_env_cached()
 
 
-@lru_cache(maxsize=16)
-def _discover_paddle_env_cached(
-    explicit_python: str,
-    explicit_source_dir: str,
-    env_python: str,
-    env_source_dir: str,
-) -> PaddleEnv | None:
-    explicit_py = _path_or_none(explicit_python)
-    explicit_src = _path_or_none(explicit_source_dir)
-    env_py = _path_or_none(env_python)
-    env_src = _path_or_none(env_source_dir)
+def refresh_paddle_environment_cache() -> None:
+    """Clear cached probes so the UI can pick up an environment install or change."""
+    _discover_paddle_env_cached.cache_clear()
+    _probe_paddle_environment_cached.cache_clear()
 
-    candidate_pairs: list[tuple[Path | None, Path | None, str]] = [
-        (explicit_py, explicit_src, "explicit"),
-        (env_py, env_src, "environment"),
-    ]
 
+def _discover_configured_paddle_env(
+    python_path: Path | None,
+    source_dir: Path | None,
+    source: str,
+) -> PaddleEnv:
+    if python_path is not None and not python_path.is_file():
+        raise PaddleEnvironmentError(
+            f"Configured PaddleOCR Python executable does not exist: {python_path}. "
+            "Set --paddle-ocr-python (or AIH_PADDLE_PYTHON) to an existing Python executable. "
+            "To create an environment, run python scripts/install_paddle.py or "
+            'pip install "aih-ocr[paddle]" (CPU).'
+        )
+    if source_dir is not None and not source_dir.is_dir():
+        raise PaddleEnvironmentError(
+            f"Configured PaddleOCR source directory does not exist: {source_dir}"
+        )
+
+    if python_path is None and source_dir is not None:
+        for candidate in _venv_python_candidates(source_dir):
+            if candidate.is_file():
+                python_path = candidate
+                break
+    if python_path is None:
+        raise PaddleEnvironmentError(
+            f"{source.title()} PaddleOCR path was set, but no Python executable was found."
+        )
+
+    source_dir = source_dir or _source_dir_from_python(python_path) or python_path.parent
+    if not source_dir.is_dir():
+        raise PaddleEnvironmentError(
+            f"Configured PaddleOCR source directory does not exist: {source_dir}"
+        )
+    status = probe_paddle_environment(python_path, source_dir)
+    if status["error"]:
+        raise PaddleEnvironmentError(
+            f"Configured PaddleOCR environment at {python_path} is unusable: "
+            f"{status['error']}"
+        )
+    return PaddleEnv(python=python_path, source_dir=source_dir, source=source)
+
+
+@lru_cache(maxsize=1)
+def _discover_paddle_env_cached() -> PaddleEnv | None:
     source_candidates = _unique_paths(
         [
-            explicit_src,
-            env_src,
             _DEFAULT_PADDLE_SOURCE_DIR,
             *_project_paddle_roots(),
             *_nearby_paddle_source_dirs(),
         ]
     )
+    candidate_pairs: list[tuple[Path, Path, str]] = []
     for source_dir in source_candidates:
         for python_path in _venv_python_candidates(source_dir):
             candidate_pairs.append((python_path, source_dir, f"source:{source_dir}"))
 
-    for python_path in _unique_paths([explicit_py, env_py, _DEFAULT_PADDLE_PYTHON]):
-        source_dir = explicit_src or env_src or _source_dir_from_python(python_path) or python_path.parent
+    for python_path in _unique_paths([_DEFAULT_PADDLE_PYTHON]):
+        source_dir = _source_dir_from_python(python_path) or python_path.parent
         candidate_pairs.append((python_path, source_dir, f"python:{python_path}"))
 
     path_python = shutil.which("python")
     if path_python:
-        candidate_pairs.append((Path(path_python), explicit_src or env_src or Path.cwd(), "PATH"))
-    candidate_pairs.append((Path(sys.executable), explicit_src or env_src or Path.cwd(), "current-python"))
+        candidate_pairs.append((Path(path_python), Path.cwd(), "PATH"))
+    candidate_pairs.append((Path(sys.executable), Path.cwd(), "current-python"))
 
     seen: set[tuple[str, str]] = set()
     for python_path, source_dir, source in candidate_pairs:
-        if python_path is None or source_dir is None:
-            continue
         python_path = python_path.expanduser()
         source_dir = source_dir.expanduser()
         key = (str(python_path).casefold(), str(source_dir).casefold())
         if key in seen:
             continue
         seen.add(key)
-        if not python_path.exists():
+        if not python_path.is_file() or not source_dir.is_dir():
             continue
-        if not source_dir.exists():
-            source_dir = python_path.parent
-        if _python_can_import_paddleocr(python_path, source_dir):
+        status = probe_paddle_environment(python_path, source_dir)
+        if status["error"] is None:
             return PaddleEnv(python=python_path, source_dir=source_dir, source=source)
     return None
 
@@ -180,11 +218,8 @@ def _project_paddle_roots() -> list[Path]:
     optional Paddle stack never touches the main environment.
     """
     roots = [Path(__file__).resolve().parents[2], Path.cwd()]
-    return [
-        root
-        for root in _unique_paths(roots)
-        if any((root / name).is_dir() for name in (".venv-paddle", ".venv-paddle-gpu", ".venv-paddle-cpu"))
-    ]
+    names = (".venv-paddle", ".venv-paddle-gpu", ".venv-paddle-cpu")
+    return [root for root in _unique_paths(roots) if any((root / name).is_dir() for name in names)]
 
 
 def _nearby_paddle_source_dirs() -> list[Path]:
@@ -217,9 +252,9 @@ def _nearby_paddle_source_dirs() -> list[Path]:
 
 def _venv_python_candidates(source_dir: Path) -> list[Path]:
     venv_names = [
-        ".venv-paddle-cpu",
-        ".venv-paddle-gpu",
         ".venv-paddle",
+        ".venv-paddle-gpu",
+        ".venv-paddle-cpu",
         ".venv",
         "venv",
         "env",
@@ -238,28 +273,123 @@ def _venv_python_candidates(source_dir: Path) -> list[Path]:
 
 def _source_dir_from_python(python_path: Path) -> Path | None:
     for parent in python_path.parents:
-        if parent.name in {".venv-paddle-gpu", ".venv-paddle", ".venv", "venv", "env"}:
+        if parent.name in {
+            ".venv-paddle-gpu",
+            ".venv-paddle-cpu",
+            ".venv-paddle",
+            ".venv",
+            "venv",
+            "env",
+        }:
             return parent.parent
     return None
 
 
+def probe_paddle_environment(
+    python: str | Path,
+    source_dir: str | Path | None,
+) -> dict[str, Any]:
+    """Probe PaddleOCR imports and devices without constructing a model.
+
+    The returned mapping is JSON-serializable. GPU availability is based on Paddle's
+    CUDA build plus its device count; no model is loaded and no inference is run.
+    """
+    python_path = Path(python).expanduser()
+    source_path = (
+        Path(source_dir).expanduser()
+        if source_dir is not None
+        else (_source_dir_from_python(python_path) or python_path.parent)
+    )
+    if not python_path.is_file():
+        status = _empty_paddle_probe(f"Python executable does not exist: {python_path}")
+    elif not source_path.is_dir():
+        status = _empty_paddle_probe(
+            f"PaddleOCR source directory does not exist: {source_path}"
+        )
+    else:
+        status = _probe_paddle_environment_cached(
+            str(python_path.resolve()), str(source_path.resolve())
+        )
+    status = dict(status)
+    status["python"] = str(python_path)
+    status["source_dir"] = str(source_path)
+    status["device_available"] = dict(status["device_available"])
+    return status
+
+
+def _empty_paddle_probe(error: str) -> dict[str, Any]:
+    return {
+        "python": None,
+        "source_dir": None,
+        "paddleocr_version": None,
+        "paddle_version": None,
+        "cuda_compiled": None,
+        "gpu_count": None,
+        "device_available": {"cpu": False, "gpu": False},
+        "gpu_error": None,
+        "error": error,
+    }
+
+
 @lru_cache(maxsize=64)
-def _python_can_import_paddleocr(python_path: Path, source_dir: Path) -> bool:
+def _probe_paddle_environment_cached(
+    python_path: str, source_dir: str
+) -> dict[str, Any]:
     env = os.environ.copy()
     pythonpath_parts = []
-    if source_dir.exists():
-        pythonpath_parts.append(str(source_dir))
+    pythonpath_parts.append(source_dir)
     existing_pythonpath = env.get("PYTHONPATH")
     if existing_pythonpath:
         pythonpath_parts.append(existing_pythonpath)
-    if pythonpath_parts:
-        env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+    env["PYTHONPATH"] = os.pathsep.join(pythonpath_parts)
+    code = r'''import importlib.metadata, json
+result = {
+    "python": None,
+    "source_dir": None,
+    "paddleocr_version": None,
+    "paddle_version": None,
+    "cuda_compiled": None,
+    "gpu_count": None,
+    "device_available": {"cpu": False, "gpu": False},
+    "gpu_error": None,
+    "error": None,
+}
+errors = []
+gpu_error = None
+try:
+    import paddle
+    result["paddle_version"] = getattr(paddle, "__version__", None)
+    result["cuda_compiled"] = bool(paddle.device.is_compiled_with_cuda())
+    result["device_available"]["cpu"] = True
+    if result["cuda_compiled"]:
+        try:
+            result["gpu_count"] = int(paddle.device.cuda.device_count())
+            result["device_available"]["gpu"] = result["gpu_count"] > 0
+            if result["gpu_count"] == 0:
+                gpu_error = "CUDA build found but no GPU device is available"
+        except Exception as exc:
+            gpu_error = "GPU device probe failed: " + str(exc)
+    else:
+        result["gpu_count"] = 0
+except Exception as exc:
+    errors.append("Paddle import failed: " + str(exc))
+try:
+    import paddleocr
+    from paddleocr import PaddleOCR, TextDetection
+    result["paddleocr_version"] = getattr(paddleocr, "__version__", None)
+    if not result["paddleocr_version"]:
+        result["paddleocr_version"] = importlib.metadata.version("paddleocr")
+except Exception as exc:
+    errors.append("PaddleOCR import failed: " + str(exc))
+result["error"] = "; ".join(errors) or None
+result["gpu_error"] = gpu_error
+print(json.dumps(result, ensure_ascii=False))'''
     try:
         result = subprocess.run(
             [
-                str(python_path),
+                python_path,
                 "-c",
-                "from paddleocr import TextDetection; print('ok')",
+                code,
             ],
             capture_output=True,
             text=True,
@@ -268,11 +398,25 @@ def _python_can_import_paddleocr(python_path: Path, source_dir: Path) -> bool:
             timeout=30,
             check=False,
             env=env,
-            cwd=str(source_dir) if source_dir.exists() else None,
+            cwd=source_dir,
         )
-    except Exception:
-        return False
-    return result.returncode == 0 and "ok" in (result.stdout or "")
+    except (OSError, subprocess.SubprocessError) as exc:
+        status = _empty_paddle_probe(f"Paddle environment probe failed: {exc}")
+    else:
+        try:
+            status = json.loads((result.stdout or "").strip().splitlines()[-1])
+            if not isinstance(status, dict):
+                raise ValueError("probe result is not an object")
+            if result.returncode != 0 and not status.get("error"):
+                status["error"] = (result.stderr or "probe process failed").strip()[-1000:]
+        except (IndexError, ValueError, json.JSONDecodeError) as exc:
+            details = (result.stderr or result.stdout or "").strip()[-1000:]
+            status = _empty_paddle_probe(
+                f"Paddle environment probe returned invalid JSON: {exc}; {details}"
+            )
+    status["python"] = python_path
+    status["source_dir"] = source_dir
+    return status
 
 
 def _detect_lines_paddle_det_external(

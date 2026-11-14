@@ -25,8 +25,8 @@ def ip():
 @pytest.mark.parametrize(
     "nvidia, system, kind, tag",
     [
-        (("RTX 5060 Ti", 13.0), "Windows", "gpu", "cu130"),
-        (("RTX 5060 Ti", 13.2), "Linux", "gpu", "cu130"),
+        (("RTX 5060 Ti", 13.0), "Windows", "gpu", "cu129"),
+        (("RTX 5060 Ti", 13.2), "Linux", "gpu", "cu129"),
         (("A100", 12.9), "Linux", "gpu", "cu129"),
         (("RTX 4090", 12.8), "Windows", "gpu", "cu126"),
         (("RTX 3060", 12.6), "Windows", "gpu", "cu126"),
@@ -45,11 +45,15 @@ def test_plan_follows_the_machine(ip, nvidia, system, kind, tag):
 def test_gpu_install_uses_paddle_index_and_cpu_does_not(ip):
     gpu = ip.make_plan(("RTX 5060 Ti", 13.0), "Windows")
     cpu = ip.make_plan(None, "Windows")
-    gpu_cmd = ip.pip_commands(gpu)[-1]
-    cpu_cmd = ip.pip_commands(cpu)[-1]
-    assert "paddlepaddle-gpu>=3.3,<4" in gpu_cmd and "--extra-index-url" in gpu_cmd
-    assert "paddlepaddle>=3.3,<4" in cpu_cmd and "--extra-index-url" not in cpu_cmd
-    assert any(arg.startswith("paddleocr") for arg in gpu_cmd + cpu_cmd)
+    gpu_cmds = ip.pip_commands(gpu)
+    cpu_cmds = ip.pip_commands(cpu)
+    gpu_paddle_cmd = next(cmd for cmd in gpu_cmds if ip.GPU_SPEC in cmd)
+    gpu_ocr_cmd = next(cmd for cmd in gpu_cmds if ip.PADDLEOCR_SPEC in cmd)
+    cpu_install_cmd = cpu_cmds[-1]
+    assert "--index-url" in gpu_paddle_cmd and gpu.index_url in gpu_paddle_cmd
+    assert "--index-url" not in gpu_ocr_cmd
+    assert ip.CPU_SPEC in cpu_install_cmd and "--index-url" not in cpu_install_cmd
+    assert any("uninstall" in cmd and "paddlepaddle-gpu" in cmd for cmd in cpu_cmds)
 
 
 def test_cli_discovers_the_venv_made_by_the_installer(tmp_path, monkeypatch):
@@ -66,6 +70,83 @@ def test_installs_into_separate_venv_not_the_main_one(ip):
     assert ip.VENV_DIR.name == ".venv-paddle"
     first = ip.pip_commands(ip.make_plan(None, "Linux"))[0]
     assert first[1:3] == ["-m", "venv"] and first[-1] == str(ip.VENV_DIR)
+
+
+def test_gpu_request_does_not_accept_an_existing_cpu_environment(ip):
+    status = {
+        "error": None,
+        "paddle_version": "3.3.1",
+        "paddleocr_version": "3.7.0",
+        "cuda_compiled": False,
+        "gpu_count": 0,
+        "device_available": {"cpu": True, "gpu": False},
+    }
+    assert not ip.environment_matches_plan(
+        status, ip.Plan("gpu", "GPU build requested", index_url="official-index")
+    )
+    assert ip.environment_matches_plan(status, ip.Plan("cpu", "CPU build requested"))
+
+
+def test_out_of_range_installed_versions_do_not_match_plan(ip):
+    status = {
+        "error": None,
+        "paddle_version": "2.6.2",
+        "paddleocr_version": "3.6.0",
+        "cuda_compiled": True,
+        "gpu_count": 1,
+        "device_available": {"cpu": True, "gpu": True},
+    }
+    assert not ip.environment_matches_plan(
+        status, ip.Plan("gpu", "GPU build requested", index_url="official-index")
+    )
+
+
+def test_auto_reuses_a_working_gpu_environment_if_driver_detection_misses_it(ip):
+    status = {
+        "error": None,
+        "paddle_version": "3.4.0",
+        "paddleocr_version": "3.7.0",
+        "cuda_compiled": True,
+        "gpu_count": 1,
+        "device_available": {"cpu": True, "gpu": True},
+    }
+    cpu_plan = ip.Plan("cpu", "no nvidia-smi found")
+
+    assert ip.environment_matches_mode(status, cpu_plan, "auto")
+    assert not ip.environment_matches_mode(status, cpu_plan, "cpu")
+
+
+def test_gpu_verification_fails_if_cuda_device_is_unavailable(ip, monkeypatch, capsys):
+    monkeypatch.setattr(ip, "venv_python", lambda: Path("python.exe"))
+    monkeypatch.setattr(
+        ip,
+        "probe_environment",
+        lambda *_args: {
+            "error": None,
+            "paddle_version": "3.3.1",
+            "paddleocr_version": "3.7.0",
+            "cuda_compiled": True,
+            "gpu_count": 0,
+            "device_available": {"cpu": True, "gpu": False},
+            "gpu_error": "CUDA build found but no GPU device is available",
+        },
+    )
+    assert not ip.verify(ip.Plan("gpu", "GPU build requested", index_url="official-index"))
+    assert "cannot access a CUDA device" in capsys.readouterr().out
+
+
+def test_dry_run_does_not_probe_or_import_paddle(ip, monkeypatch, capsys):
+    monkeypatch.setattr(ip, "detect_nvidia", lambda: None)
+    monkeypatch.setattr(
+        ip,
+        "probe_environment",
+        lambda *_args: pytest.fail("dry-run must not import Paddle"),
+    )
+    assert ip.main(["--mode", "cpu", "--dry-run"]) == 0
+    output = capsys.readouterr().out
+    assert "CPU build requested" in output
+    assert "pip install" in output
+    assert '"paddlepaddle>=3.3,<4"' in output
 
 
 def test_non_interactive_default_installs_nothing():
@@ -112,6 +193,16 @@ def test_cuda_version_is_parsed_from_old_and_new_drivers(ip, monkeypatch, banner
 def test_unreadable_cuda_version_falls_back_to_cpu_with_a_hint(ip):
     plan = ip.make_plan(("RTX Test", None), "Windows")
     assert plan.kind == "cpu" and "--mode gpu" in plan.reason
+
+
+def test_blackwell_requires_cuda_129_and_never_uses_cu126(ip):
+    unsupported = ip.make_plan(("NVIDIA GeForce RTX 5060 Ti", 12.8), "Windows")
+    supported = ip.make_plan(("NVIDIA GeForce RTX 5060 Ti", 12.9), "Windows")
+
+    assert unsupported.kind == "cpu"
+    assert "12.9" in unsupported.reason
+    assert supported.kind == "gpu"
+    assert "cu129" in supported.index_url
 
 
 def test_detects_the_real_gpu_when_nvidia_smi_exists(ip):

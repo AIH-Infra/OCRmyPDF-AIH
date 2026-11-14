@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# AIH-OCRmyPDF Install Script (macOS/Linux)
+# AIH-OCR Install Script (macOS/Linux)
 
 set -e
 cd "$(dirname "$0")"
@@ -17,7 +17,7 @@ fi
 
 echo ""
 echo "============================================================"
-echo "   AIH-OCRmyPDF Environment Setup"
+echo "   AIH-OCR Environment Setup"
 echo "   Batch PDF OCR Pipeline"
 echo "============================================================"
 echo ""
@@ -92,7 +92,7 @@ python -m pip install --upgrade pip -q
 # ============================================
 # Step 3: Install Dependencies
 # ============================================
-echo "[3/4] Installing AIH-OCRmyPDF..."
+echo "[3/4] Installing AIH-OCR..."
 
 python -m pip install -e . -c requirements-lock.txt -q
 echo "[OK] Dependencies installed"

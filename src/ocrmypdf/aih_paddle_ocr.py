@@ -45,7 +45,7 @@ def run_paddle_ocr_page(
     if paddle_env is None:
         raise RuntimeError(
             "PaddleOCR environment was not found. Install the optional extra with "
-            "`pip install \"aih-ocrmypdf[paddle]\"` (CPU), or configure "
+            "`pip install \"aih-ocr[paddle]\"` (CPU), or configure "
             "--paddle-ocr-python / --paddle-ocr-source-dir (or AIH_PADDLE_PYTHON) "
             "to point at an existing PaddleOCR environment (e.g. a GPU build)."
         )
